@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import sqlite3
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone, timedelta, time
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +31,56 @@ SQLITE_PATH = BOT_DIR / "data" / "bot.sqlite3"
 
 logger = logging.getLogger("consume")
 INTENTS = discord.Intents.default()
+
+
+class _JsonLogFormatter(logging.Formatter):
+    """Одна строка = один JSON-объект (удобно для парсинга и внешних сборщиков логов)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _configure_json_logging() -> None:
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JsonLogFormatter())
+    root.addHandler(handler)
+
+
+def _start_fly_health_server_if_needed() -> None:
+    """На Fly.io health-check идёт на internal_port (обычно 8080); бот сам HTTP не поднимает."""
+    if not os.getenv("FLY_APP_NAME"):
+        return
+    raw = (os.getenv("PORT") or "8080").strip()
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 8080
+
+    class _HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    def _serve() -> None:
+        httpd = HTTPServer(("0.0.0.0", port), _HealthHandler)
+        httpd.serve_forever()
+
+    threading.Thread(target=_serve, name="fly-health", daemon=True).start()
 INTENTS.message_content = True  # нужен для слежения за сообщениями в канале
 INTENTS.members = True
 
@@ -2591,20 +2643,45 @@ async def _log_bot_interaction_action(interaction: discord.Interaction) -> None:
             return
         log_ch = fetched
 
-    guild_label = (
-        f"{interaction.guild.name} ({interaction.guild.id})"
-        if interaction.guild is not None
-        else "DM"
-    )
-    channel_label = f"<#{interaction.channel_id}>" if interaction.channel_id else "unknown"
-    text = (
-        f"Действие: **{action}**\n"
-        f"Пользователь: <@{user.id}> (`{user.id}`)\n"
-        f"Сервер: {guild_label}\n"
-        f"Канал: {channel_label}"
-    )
+    data_raw = interaction.data if isinstance(interaction.data, dict) else {}
+    custom_id_raw = str(data_raw.get("custom_id", "") or "")[:300] or None
+    it = interaction.type
+    type_name = getattr(it, "name", None) or str(it)
+
+    payload: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "source": "interaction",
+        "interaction_id": str(interaction.id),
+        "interaction_type": type_name,
+        "action": action,
+        "user": {
+            "id": user.id,
+            "username": getattr(user, "name", None),
+            "global_name": getattr(user, "global_name", None),
+        },
+        "channel_id": interaction.channel_id,
+    }
+    if interaction.guild is not None:
+        payload["guild"] = {
+            "id": interaction.guild.id,
+            "name": interaction.guild.name,
+        }
+    else:
+        payload["guild"] = None
+    if custom_id_raw:
+        payload["custom_id"] = custom_id_raw
+
+    line = json.dumps(payload, ensure_ascii=False)
+    if len(line) > 1980:
+        payload["action"] = (action[:400] + "…") if len(action) > 400 else action
+        payload.pop("custom_id", None)
+        line = json.dumps(payload, ensure_ascii=False)
+        if len(line) > 1980:
+            line = line[:1977] + "…"
+
+    discord_body = f"```json\n{line}\n```"
     try:
-        await log_ch.send(text[:2000])
+        await log_ch.send(discord_body[:2000])
     except discord.HTTPException as e:
         logger.warning("Не удалось отправить лог действия бота в канал %s: %s", BOT_ACTION_LOG_CHANNEL_ID, e)
 
@@ -3687,11 +3764,12 @@ async def on_ready() -> None:
         _daily_role_ping_task = asyncio.create_task(daily_role_ping_loop())
     if _autopark_task is None or _autopark_task.done():
         _autopark_task = asyncio.create_task(autopark_expire_sweep_loop())
-    print(f"Logged in as {bot.user} ({bot.user.id})")
+    logger.info("Бот запущен: %s (%s)", bot.user, bot.user.id if bot.user else None)
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    _configure_json_logging()
+    _start_fly_health_server_if_needed()
     token = (os.getenv("DISCORD_TOKEN") or "").strip().strip('"').strip("'")
     if not token:
         raise SystemExit("Задайте DISCORD_TOKEN в .env или окружении.")
