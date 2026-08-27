@@ -153,6 +153,7 @@ function hubPayload(guild) {
       btn("c:adm:tab:dm", "ЛС при пинге", "💬"),
       btn("c:adm:tab:logs", "Логи", "📋"),
       btn("c:adm:tab:mods", "Модераторы", "🛡️"),
+      btn("c:adm:tab:summary", "Сводка", "📊"),
     ),
   ]);
 }
@@ -303,24 +304,74 @@ function topicStatus(guild, tab, ui) {
       placeholder: "Кто модератор бота?",
     };
   }
+  if (tab === "summary" || tab === "home") {
+    const roleOrEmpty = (ids) => (ids?.length ? mentionRoles(ids) : "—");
+    const oneRole = (id) => (id ? `<@&${id}>` : "—");
+    return {
+      title: "Сводка привязок",
+      body:
+        `**Модераторы**\n` +
+        `Модераторы бота: ${roleOrEmpty(cfg.moderatorRoleIds)}\n\n` +
+        `**Заявки**\n` +
+        `Категория: ${fmtCh(cfg.ticketCategoryId)}\n` +
+        `Стафф: ${roleOrEmpty(cfg.ticketStaffRoleIds)}\n` +
+        `Пинг заявки: ${roleOrEmpty(cfg.ticketPingRoleIds)}\n` +
+        `Академия: ${roleOrEmpty(cfg.acceptRoleIdsAcademy)}\n` +
+        `Основа: ${roleOrEmpty(cfg.acceptRoleIdsMain)}\n` +
+        `Приём РП: ${statusLine(acc.rp)} · VZP: ${statusLine(acc.vzp)}\n\n` +
+        `**Автопарк**\n` +
+        `Менеджеры: ${roleOrEmpty(cfg.autoparkManagerRoleIds)}\n` +
+        `Бронь: ${cfg.autoparkReserveMinutes || 60} мин\n\n` +
+        `**Контракты**\n` +
+        `Канал: ${fmtCh(cfg.kontraktChannelId)}\n` +
+        `Публикация: ${roleOrEmpty(cfg.kontraktPostRoleIds) || "модераторы"}\n` +
+        `Пикнул/Отказ: ${roleOrEmpty(cfg.kontraktManagerRoleIds) || "модераторы"}\n` +
+        `Пинг нового: ${roleOrEmpty(cfg.kontraktNewContractPingRoleIds)}\n\n` +
+        `**Тег в день**\n` +
+        `Роль: ${oneRole(cfg.dailyRolePingRoleId)}\n` +
+        `Канал: ${fmtCh(cfg.dailyRolePingChannelId)}\n` +
+        `Время: ${cfg.dailyRolePingTimes || `каждые ${cfg.dailyRolePingIntervalHours || 23} ч`}\n` +
+        `TZ: ${cfg.dailyRolePingTimezone || "Europe/Moscow"}\n\n` +
+        `**Спам**\n` +
+        `Кто может: ${roleOrEmpty(cfg.spamCommandRoleIds) || "Manage Server"}\n\n` +
+        `**ЛС при пинге**\n` +
+        `Кому: ${roleOrEmpty(cfg.roleMentionDmTargetRoleIds)}\n` +
+        `Каналы: ${mentionChannels(cfg.roleMentionDmChannelIds)}\n` +
+        `Категории: ${mentionChannels(cfg.roleMentionDmCategoryIds)}\n\n` +
+        `**Логи**\n` +
+        `Канал: ${fmtCh(cfg.botActionLogChannelId)}\n\n` +
+        `**Панели (куда слали)**\n` +
+        `${panelLine(cfg, "apps", "Заявки")}\n` +
+        `${panelLine(cfg, "maps", "Карты")}\n` +
+        `${panelLine(cfg, "kontrakt", "Контракты")}\n` +
+        `${panelLine(cfg, "autopark", "Автопарк")}\n` +
+        `${panelLine(cfg, "control", "Админка")}`,
+      options: [{ label: "Обновить сводку", value: "t:refresh", emoji: "🔄", description: "Перечитать привязки" }],
+      placeholder: "Обновить сводку",
+    };
+  }
   return { title: "Админка", body: "Выбери раздел на главной.", options: [], placeholder: "…" };
 }
 
 function topicPayload(guild, tab, ui) {
   const t = topicStatus(guild, tab, ui);
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(`c:adm:cfg:${tab}`)
-    .setPlaceholder(t.placeholder)
-    .addOptions(
-      t.options.map((o) =>
-        new StringSelectMenuOptionBuilder()
-          .setLabel(o.label)
-          .setValue(o.value)
-          .setDescription(o.description)
-          .setEmoji(o.emoji),
-      ),
-    );
-  return v2Message(t.title, t.body, [new ActionRowBuilder().addComponents(select)], { ephemeral: true });
+  const rows = [];
+  if (t.options?.length) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(`c:adm:cfg:${tab}`)
+      .setPlaceholder(t.placeholder)
+      .addOptions(
+        t.options.map((o) =>
+          new StringSelectMenuOptionBuilder()
+            .setLabel(o.label)
+            .setValue(o.value)
+            .setDescription(o.description)
+            .setEmoji(o.emoji),
+        ),
+      );
+    rows.push(new ActionRowBuilder().addComponents(select));
+  }
+  return v2Message(t.title, t.body, rows, { ephemeral: true });
 }
 
 const PICK_META = {
@@ -681,6 +732,8 @@ const TAB_LABELS = {
   dm: "ЛС при пинге",
   logs: "Логи",
   mods: "Модераторы",
+  summary: "Сводка",
+  home: "Сводка",
 };
 
 async function publishTo(interaction, kind, channel) {
@@ -758,7 +811,7 @@ export async function handleAdminInteraction(interaction) {
   if (interaction.isButton() && tabOpen) {
     const tab =
       {
-        home: "mods",
+        home: "summary",
         roles: "apps",
         accept: "apps",
         channels: "logs",
@@ -846,6 +899,10 @@ export async function handleAdminInteraction(interaction) {
       } catch {
         await interaction.followUp(payload).catch(() => null);
       }
+      return true;
+    }
+    if (value === "t:refresh") {
+      await refreshTopic(interaction, tab);
       return true;
     }
     if (value === "t:rpacc" || value === "t:vzpacc") {
