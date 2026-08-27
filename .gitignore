@@ -6,3 +6,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+node_modules/
+*.log
+bot.json.bak
+bot.json.tmp

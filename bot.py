@@ -125,6 +125,58 @@ def role_ids_or_moderation(role_ids: frozenset[int]) -> frozenset[int]:
     return role_ids if role_ids else MODERATION_ROLE_IDS
 
 
+async def _safe_interaction_ephemeral(interaction: discord.Interaction, content: str) -> bool:
+    """Пытается отправить ephemeral-ответ и не валит обработчик при сбоях API."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True)
+        else:
+            await interaction.response.send_message(content, ephemeral=True)
+        return True
+    except discord.HTTPException as e:
+        # Частые гонки: interaction/канал/вебхук уже недоступны.
+        if getattr(e, "code", None) in {10003, 10015, 10062}:
+            logger.warning("Не удалось отправить ephemeral-ответ: %s (%s)", e, getattr(e, "code", "n/a"))
+            return False
+        logger.exception("Ошибка отправки ephemeral-ответа")
+        return False
+    except Exception:
+        logger.exception("Неожиданная ошибка отправки ephemeral-ответа")
+        return False
+
+
+def _is_stale_interaction_error(error: Exception) -> bool:
+    if not isinstance(error, discord.HTTPException):
+        return False
+    return getattr(error, "code", None) in {10003, 10015, 10062}
+
+
+class SafeView(discord.ui.View):
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[Any]
+    ) -> None:
+        if _is_stale_interaction_error(error):
+            logger.warning("Устаревшее взаимодействие в view %s: %s", type(self).__name__, error)
+            return
+        logger.exception("Ошибка в view %s (item=%s)", type(self).__name__, type(item).__name__, exc_info=error)
+        await _safe_interaction_ephemeral(
+            interaction,
+            "Взаимодействие не удалось обработать. Попробуйте снова через пару секунд.",
+        )
+
+
+class SafeModal(discord.ui.Modal):
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        if _is_stale_interaction_error(error):
+            logger.warning("Устаревшее взаимодействие в modal %s: %s", type(self).__name__, error)
+            return
+        logger.exception("Ошибка в modal %s", type(self).__name__, exc_info=error)
+        await _safe_interaction_ephemeral(
+            interaction,
+            "Не удалось обработать форму. Откройте её заново и повторите отправку.",
+        )
+
+
 def _ticket_staff_role_ids() -> frozenset[int]:
     return frozenset(_parse_id_list(os.getenv("TICKET_STAFF_ROLE_IDS", "")))
 
@@ -560,9 +612,11 @@ def build_kontrakt_contract_embed(state: ContractState) -> discord.Embed:
         title=state.title[:256] or "Контракт",
         color=discord.Color.dark_theme(),
     )
-    emb.add_field(name="Автор", value=f"<@{state.creator_id}>", inline=False)
-    emb.add_field(name="Векселя", value=state.veksels or "—", inline=False)
-    emb.add_field(name="Время", value=state.time_slot or "—", inline=False)
+    emb.add_field(
+        name="Автор",
+        value=f"<@{state.creator_id}>\nКонтракт: {state.title[:256] or '—'}",
+        inline=False,
+    )
     emb.add_field(name="На 100%", value=state.razdel_100 or "—", inline=False)
     emb.add_field(
         name=f"Участники ({len(state.participant_ids)}/{state.max_participants})",
@@ -959,6 +1013,54 @@ def _embed_field_codeblock(text: str) -> str:
     return f"```{raw}```"
 
 
+def _normalize_ticket_fields(kind: TicketKind, fields: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """
+    Приводит поля тикета к единому формату.
+    Нужен для совместимости со старыми заявками/старыми заголовками.
+    """
+    values = [str(v) for _, v in fields]
+    if kind == "rp":
+        names = [
+            "Возраст",
+            "Онлайн",
+            "Семьи",
+            "Откуда",
+            "Откат",
+        ]
+    else:
+        names = [
+            "Возраст",
+            "Онлайн",
+            "Семьи",
+            "Откат",
+        ]
+    out: list[tuple[str, str]] = []
+    for i, name in enumerate(names):
+        out.append((name, values[i] if i < len(values) else "—"))
+    return out
+
+
+def _embed_lines_value(lines: list[str], *, empty: str = "—", limit: int = 1024) -> str:
+    """Безопасно собирает строки в значение поля embed (<=1024 символов)."""
+    if not lines:
+        return empty
+    out: list[str] = []
+    used = 0
+    total = len(lines)
+    for idx, line in enumerate(lines):
+        chunk = line if not out else f"\n{line}"
+        if used + len(chunk) > limit:
+            left = total - idx
+            if left > 0:
+                suffix = f"\n…и еще {left}"
+                if used + len(suffix) <= limit:
+                    out.append(suffix)
+            break
+        out.append(chunk)
+        used += len(chunk)
+    return "".join(out) if out else empty
+
+
 def moderation_embed(guild_id: int) -> discord.Embed:
     rp_on, vzp_on = guild_acceptance(guild_id)
     e = discord.Embed(
@@ -988,13 +1090,14 @@ def _build_ticket_embed(
         timestamp=datetime.now(timezone.utc),
     )
     emb.add_field(name="ПОЛЬЗОВАТЕЛЬ", value=applicant.mention, inline=False)
+    fields = _normalize_ticket_fields(kind, fields)
     for name, value in fields:
         emb.add_field(name=name, value=_embed_field_codeblock(value), inline=False)
     emb.set_footer(text=f"User ID: {applicant.id} - Тикет №{ticket_no} - {datetime.now().strftime('%d.%m.%Y')}")
     return emb
 
 
-class RejectReasonModal(discord.ui.Modal, title="Причина отказа"):
+class RejectReasonModal(SafeModal, title="Причина отказа"):
     reason = discord.ui.TextInput(
         label="Причина отказа",
         style=discord.TextStyle.paragraph,
@@ -1044,13 +1147,13 @@ class RejectReasonModal(discord.ui.Modal, title="Причина отказа"):
                 await _safe_dm_embed(applicant, emb)
 
             await _ticket_delete(self.private_channel_id)
+            await _safe_interaction_ephemeral(interaction, "Отказ с причиной отправлен заявителю в ЛС.")
             ch = guild.get_channel(self.private_channel_id)
             if isinstance(ch, discord.TextChannel):
                 try:
                     await ch.delete(reason="Отказ после обзвона")
                 except (discord.Forbidden, discord.NotFound):
                     logger.exception("Не удалось удалить канал после отказа")
-            await interaction.followup.send("Отказ с причиной отправлен заявителю в ЛС.", ephemeral=True)
             return
 
         if self.ticket_no is None:
@@ -1088,10 +1191,10 @@ class RejectReasonModal(discord.ui.Modal, title="Причина отказа"):
             except (discord.Forbidden, discord.NotFound, discord.HTTPException):
                 logger.warning("Не удалось удалить сообщение заявки в канале модерации")
 
-        await interaction.followup.send("Отказ с причиной отправлен заявителю в ЛС.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, "Отказ с причиной отправлен заявителю в ЛС.")
 
 
-class TicketViewInitial(discord.ui.View):
+class TicketViewInitial(SafeView):
     def __init__(self, guild_id: int, ticket_no: int) -> None:
         super().__init__(timeout=None)
         self.guild_id = guild_id
@@ -1142,20 +1245,19 @@ class TicketViewInitial(discord.ui.View):
             )
             return
 
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         applicant = guild.get_member(int(rec["applicant_id"]))
         if applicant is None:
             try:
                 applicant = await guild.fetch_member(int(rec["applicant_id"]))
             except discord.NotFound:
-                await interaction.response.send_message("Пользователь вышел с сервера.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Пользователь вышел с сервера.")
                 return
-
-        await interaction.response.defer()
 
         kind: TicketKind = rec["kind"]
         ticket_no = int(rec["ticket_no"])
-        fields = list(rec["embed_fields"])
+        fields = _normalize_ticket_fields(kind, list(rec["embed_fields"]))
 
         try:
             private_ch = await _create_ticket_channel(
@@ -1241,7 +1343,7 @@ class TicketViewInitial(discord.ui.View):
         await interaction.response.send_modal(RejectReasonModal(guild_id=self.guild_id, ticket_no=self.ticket_no))
 
 
-class TicketViewFinal(discord.ui.View):
+class TicketViewFinal(SafeView):
     def __init__(self, channel_id: int) -> None:
         super().__init__(timeout=None)
         self.channel_id = channel_id
@@ -1285,18 +1387,21 @@ class TicketViewFinal(discord.ui.View):
             await interaction.response.send_message("Сначала нажмите «Обзвон» или заявка уже закрыта.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         guild = interaction.guild
         ch = interaction.channel
         if guild is None or not isinstance(ch, discord.TextChannel):
+            await _safe_interaction_ephemeral(interaction, "Канал тикета недоступен. Попробуйте снова.")
             return
 
         role_ids = _accept_role_ids(track)
         if not role_ids:
             key = "ACCEPT_ROLE_ID_ACADEMY" if track == "academy" else "ACCEPT_ROLE_ID_MAIN"
-            await interaction.response.send_message(
+            await _safe_interaction_ephemeral(
+                interaction,
                 f"В `.env` не задан **{key}** (или общий **ACCEPT_ROLE_ID**) — укажите ID роли "
                 "(или несколько через запятую), которую выдавать после принятия.",
-                ephemeral=True,
             )
             return
 
@@ -1311,10 +1416,10 @@ class TicketViewFinal(discord.ui.View):
 
         if missing_ids:
             key = "ACCEPT_ROLE_ID_ACADEMY" if track == "academy" else "ACCEPT_ROLE_ID_MAIN"
-            await interaction.response.send_message(
+            await _safe_interaction_ephemeral(
+                interaction,
                 f"На сервере не найдены роли с ID: {', '.join(str(x) for x in missing_ids)}. "
                 f"Проверьте {key} (или ACCEPT_ROLE_ID) в `.env`.",
-                ephemeral=True,
             )
             return
 
@@ -1324,17 +1429,16 @@ class TicketViewFinal(discord.ui.View):
             try:
                 member = await guild.fetch_member(applicant_id)
             except discord.NotFound:
-                await interaction.response.send_message("Пользователь не на сервере — роль не выдана.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Пользователь не на сервере — роль не выдана.")
                 return
 
-        await interaction.response.defer()
         try:
             reason = "Заявка принята в академию" if track == "academy" else "Заявка принята в основу"
             await member.add_roles(*roles_to_add, reason=reason)
         except discord.Forbidden:
-            await interaction.followup.send(
+            await _safe_interaction_ephemeral(
+                interaction,
                 "Не удалось выдать роль: проверьте иерархию ролей (роль бота выше всех выдаваемых).",
-                ephemeral=True,
             )
             return
 
@@ -1435,7 +1539,7 @@ async def _restore_ticket_views() -> None:
             bot.add_view(TicketViewFinal(cid))
 
 
-class RPApplicationModal(discord.ui.Modal, title="Заявка РП"):
+class RPApplicationModal(SafeModal, title="Заявка РП"):
     f1 = discord.ui.TextInput(
         label="Возраст",
         placeholder="18",
@@ -1480,16 +1584,16 @@ class RPApplicationModal(discord.ui.Modal, title="Заявка РП"):
             interaction,
             kind="rp",
             embed_fields=[
-                ("ВАШ НИКНЕЙМ, ВОЗРАСТ, СРЕДНЕЕ ВРЕМЯ В ИГРЕ", str(self.f1.value)),
-                ("СПИСОК СЕМЕЙ", str(self.f2.value)),
-                ("ГОТОВЫ СМЕНИТЬ ФАМИЛИЮ НА CONSUME (ОБЯЗАТЕЛЬНО)", str(self.f3.value)),
+                ("ВОЗРАСТ", str(self.f1.value)),
+                ("ОНЛАЙН", str(self.f2.value)),
+                ("СПИСОК СЕМЕЙ, В КОТОРЫХ БЫЛИ", str(self.f3.value)),
                 ("ОТКУДА УЗНАЛИ", str(self.f4.value)),
-                ("ОТКАТ DM", str(self.f5.value)),
+                ("ОТКАТ СТРЕЛЬБЫ DM 10.500 УРОНА", str(self.f5.value)),
             ],
         )
 
 
-class VZPApplicationModal(discord.ui.Modal, title="Форма заявки VZP"):
+class VZPApplicationModal(SafeModal, title="Форма заявки VZP"):
     f1 = discord.ui.TextInput(
         label="Возраст",
         placeholder="Пример: 18",
@@ -1527,8 +1631,8 @@ class VZPApplicationModal(discord.ui.Modal, title="Форма заявки VZP")
             interaction,
             kind="vzp",
             embed_fields=[
-                ("ВАШ НИКНЕЙМ, ВОЗРАСТ, СРЕДНЕЕ ВРЕМЯ В ИГРЕ", str(self.f1.value)),
-                ("СКОЛЬКО ЧАСОВ В GTA", str(self.f2.value)),
+                ("ВОЗРАСТ", str(self.f1.value)),
+                ("ОНЛАЙН", str(self.f2.value)),
                 ("В КАКИХ СЕМЬЯХ БЫЛИ", str(self.f3.value)),
                 ("ОТКАТ С ВЗП/DM", str(self.f4.value)),
             ],
@@ -1544,16 +1648,17 @@ async def _submit_ticket_modal(
     if interaction.guild is None:
         await interaction.response.send_message("Заявки только на сервере.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     applicant = _guild_member_from_interaction(interaction)
     if applicant is None:
         try:
             applicant = await interaction.guild.fetch_member(interaction.user.id)
         except discord.NotFound:
-            await interaction.response.send_message("Не удалось определить участника.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось определить участника.")
             return
 
     guild = interaction.guild
-    await interaction.response.defer(ephemeral=True)
+    embed_fields = _normalize_ticket_fields(kind, embed_fields)
 
     ticket_no = await _next_ticket_no(guild.id)
 
@@ -1616,7 +1721,7 @@ async def _submit_ticket_modal(
     )
 
 
-class ModerationPanelView(discord.ui.View):
+class ModerationPanelView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1643,7 +1748,7 @@ class ModerationPanelView(discord.ui.View):
         await interaction.response.edit_message(embed=moderation_embed(interaction.guild.id), view=self)
 
 
-class ApplicationPanelView(discord.ui.View):
+class ApplicationPanelView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1704,7 +1809,7 @@ class ApplicationPanelView(discord.ui.View):
             return
 
 
-class VZPMapsView(discord.ui.View):
+class VZPMapsView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1791,7 +1896,7 @@ async def _kontrakt_open_thread_and_notify(
     await thread.send(text[:2000], allowed_mentions=discord.AllowedMentions(users=True))
 
 
-class KontraktRejectModal(discord.ui.Modal, title="Причина отказа"):
+class KontraktRejectModal(SafeModal, title="Причина отказа"):
     reason = discord.ui.TextInput(
         label="Причина",
         placeholder="Коротко: почему отказ",
@@ -1825,7 +1930,7 @@ class KontraktRejectModal(discord.ui.Modal, title="Причина отказа")
         await interaction.response.send_message("Контракт закрыт с отказом.", ephemeral=True)
 
 
-class KontraktProposeModal(discord.ui.Modal, title="Предложить контракт"):
+class KontraktProposeModal(SafeModal, title="Предложить контракт"):
     title_input = discord.ui.TextInput(label="Название", max_length=120, placeholder="Например: Ограбление фуры")
     razdel_100 = discord.ui.TextInput(label="На 100%", max_length=100, placeholder="Да / Нет")
     people = discord.ui.TextInput(
@@ -1884,7 +1989,7 @@ class KontraktProposeModal(discord.ui.Modal, title="Предложить кон�
         await interaction.response.send_message("Контракт опубликован.", ephemeral=True)
 
 
-class KontraktPanelView(discord.ui.View):
+class KontraktPanelView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1896,7 +2001,7 @@ class KontraktPanelView(discord.ui.View):
         await interaction.response.send_modal(KontraktProposeModal())
 
 
-class KontraktContractView(discord.ui.View):
+class KontraktContractView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1918,10 +2023,11 @@ class KontraktContractView(discord.ui.View):
         if len(state.participant_ids) >= state.max_participants:
             await interaction.response.send_message("Список уже заполнен.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         state.participant_ids.append(interaction.user.id)
         _contract_store(interaction.message.id, state)
         await _kontrakt_refresh_message(interaction.message.id)
-        await interaction.response.send_message("Вы добавлены в контракт.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, "Вы добавлены в контракт.")
 
     @discord.ui.button(label="Пикнул", style=discord.ButtonStyle.secondary, custom_id="consume:kontrakt_pinged")
     async def pinged(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1935,6 +2041,7 @@ class KontraktContractView(discord.ui.View):
         if not user_can_manage_kontrakt_contract(interaction, state):
             await interaction.response.send_message(embed=_kontrakt_manage_forbidden_embed(), ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         state.status_open = False
         state.status_note = "Пикнул"
         _contract_store(interaction.message.id, state)
@@ -1944,7 +2051,7 @@ class KontraktContractView(discord.ui.View):
             decision_text="Пикнули",
             actor_id=interaction.user.id if isinstance(interaction.user, discord.Member) else None,
         )
-        await interaction.response.send_message("Контракт отмечен: Пикнул.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, "Контракт отмечен: Пикнул.")
 
     @discord.ui.button(label="Отказ", style=discord.ButtonStyle.danger, custom_id="consume:kontrakt_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2150,7 +2257,7 @@ def _sbor_remove(state: SborState, user_id: int) -> bool:
     return removed
 
 
-class SborPublicView(discord.ui.View):
+class SborPublicView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -2158,30 +2265,31 @@ class SborPublicView(discord.ui.View):
         if interaction.message is None:
             await interaction.response.send_message("Сообщение не найдено.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         async with _sbor_lock:
             state = _sbor_sessions.get(interaction.message.id)
             if state is None:
-                await interaction.response.send_message("Этот сбор уже не активен.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Этот сбор уже не активен.")
                 return
             # авто-закрытие по времени (при строго прошедшем времени)
             if datetime.now(timezone.utc) > state.start_at or not state.open:
                 state.open = False
                 await _sbor_refresh_message(state)
-                await interaction.response.send_message("Запись на этот сбор уже закрыта.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Запись на этот сбор уже закрыта.")
                 return
             if target == "main" and len(state.main_ids) >= state.max_main:
-                await interaction.response.send_message("Все места в основе уже заняты.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Все места в основе уже заняты.")
                 return
             if target == "reserve" and len(state.reserve_ids) >= state.max_reserve:
-                await interaction.response.send_message("Все места на замене уже заняты.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Все места на замене уже заняты.")
                 return
             _sbor_join(state, interaction.user.id, target)
             ok = await _sbor_refresh_message(state)
         if not ok:
-            await interaction.response.send_message("Не удалось обновить сообщение сбора.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось обновить сообщение сбора.")
             return
         label = "основу" if target == "main" else "замену"
-        await interaction.response.send_message(f"Вы записаны в **{label}**.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, f"Вы записаны в **{label}**.")
 
     @discord.ui.button(label="В основу", style=discord.ButtonStyle.success, custom_id="consume:sbor_join_main")
     async def join_main(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2196,20 +2304,21 @@ class SborPublicView(discord.ui.View):
         if interaction.message is None:
             await interaction.response.send_message("Сообщение не найдено.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         async with _sbor_lock:
             state = _sbor_sessions.get(interaction.message.id)
             if state is None:
-                await interaction.response.send_message("Этот сбор уже не активен.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Этот сбор уже не активен.")
                 return
             changed = _sbor_remove(state, interaction.user.id)
             ok = await _sbor_refresh_message(state)
         if not changed:
-            await interaction.response.send_message("Вы не были записаны в этот сбор.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Вы не были записаны в этот сбор.")
             return
         if not ok:
-            await interaction.response.send_message("Не удалось обновить сообщение сбора.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось обновить сообщение сбора.")
             return
-        await interaction.response.send_message("Вы выписаны из сбора.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, "Вы выписаны из сбора.")
 
     @discord.ui.button(label="Модерация списка", style=discord.ButtonStyle.primary, custom_id="consume:sbor_moderation")
     async def moderation(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2231,7 +2340,7 @@ class SborPublicView(discord.ui.View):
         )
 
 
-class SborPublicViewClosed(discord.ui.View):
+class SborPublicViewClosed(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -2283,13 +2392,14 @@ class SborApproveSelect(discord.ui.Select):
         if not await user_can_moderate(interaction):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         async with _sbor_lock:
             state = _sbor_sessions.get(self.message_id)
             if state is None:
-                await interaction.response.send_message("Сбор не найден.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Сбор не найден.")
                 return
             if not (state.main_ids or state.reserve_ids):
-                await interaction.response.send_message("Никто ещё не записался.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Никто ещё не записался.")
                 return
             # выбранные идут в основу, остальные из записавшихся — в замены
             selected_ids = {int(v) for v in self.values if v != "0"}
@@ -2306,18 +2416,31 @@ class SborApproveSelect(discord.ui.Select):
             state.reserve_ids = set(new_reserve)
             ok = await _sbor_refresh_message(state)
         if not ok:
-            await interaction.response.send_message("Не удалось обновить список.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось обновить список.")
             return
-        await interaction.response.send_message("Список основы и замен обновлён.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, "Список основы и замен обновлён.")
 
 
 class SborRemoveSelect(discord.ui.Select):
     def __init__(self, message_id: int, state: SborState) -> None:
+        guild = bot.get_guild(state.guild_id)
+
+        def member_name(uid: int) -> str:
+            if guild is not None:
+                member = guild.get_member(uid)
+                if member is not None:
+                    return member.display_name
+            return str(uid)
+
         options: list[discord.SelectOption] = []
         for uid in sorted(state.main_ids):
-            options.append(discord.SelectOption(label=f"Основа: {uid}", value=str(uid)))
+            options.append(
+                discord.SelectOption(label=f"Основа: {member_name(uid)}"[:100], value=str(uid))
+            )
         for uid in sorted(state.reserve_ids):
-            options.append(discord.SelectOption(label=f"Замена: {uid}", value=str(uid)))
+            options.append(
+                discord.SelectOption(label=f"Замена: {member_name(uid)}"[:100], value=str(uid))
+            )
         if not options:
             options = [discord.SelectOption(label="Список пуст", value="0")]
         super().__init__(
@@ -2333,27 +2456,28 @@ class SborRemoveSelect(discord.ui.Select):
         if not await user_can_moderate(interaction):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         uid = int(self.values[0])
         if uid == 0:
-            await interaction.response.send_message("Выписывать некого.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Выписывать некого.")
             return
         async with _sbor_lock:
             state = _sbor_sessions.get(self.message_id)
             if state is None:
-                await interaction.response.send_message("Сбор не найден.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Сбор не найден.")
                 return
             removed = _sbor_remove(state, uid)
             ok = await _sbor_refresh_message(state)
         if not removed:
-            await interaction.response.send_message("Участник не найден в списках.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Участник не найден в списках.")
             return
         if not ok:
-            await interaction.response.send_message("Удалено, но не удалось обновить сообщение.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Удалено, но не удалось обновить сообщение.")
             return
-        await interaction.response.send_message(f"<@{uid}> выписан(а) из списков.", ephemeral=True)
+        await _safe_interaction_ephemeral(interaction, f"<@{uid}> выписан(а) из списков.")
 
 
-class SborModerationView(discord.ui.View):
+class SborModerationView(SafeView):
     def __init__(self, message_id: int) -> None:
         super().__init__(timeout=300)
         self.message_id = message_id
@@ -2367,10 +2491,11 @@ class SborModerationView(discord.ui.View):
         if not await user_can_moderate(interaction):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         async with _sbor_lock:
             state = _sbor_sessions.get(self.message_id)
             if state is None:
-                await interaction.response.send_message("Сбор не найден.", ephemeral=True)
+                await _safe_interaction_ephemeral(interaction, "Сбор не найден.")
                 return
             was_open = state.open
             state.open = not state.open
@@ -2378,11 +2503,11 @@ class SborModerationView(discord.ui.View):
             if was_open and not state.open:
                 await _sbor_announce_start(state)
         if not ok:
-            await interaction.response.send_message("Не удалось обновить сообщение.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось обновить сообщение.")
             return
-        await interaction.response.send_message(
+        await _safe_interaction_ephemeral(
+            interaction,
             "Запись открыта." if state.open else "Запись закрыта.",
-            ephemeral=True,
         )
 
 
@@ -2542,6 +2667,16 @@ class ConsumeBot(commands.Bot):
 bot = ConsumeBot()
 _daily_role_ping_task: asyncio.Task[None] | None = None
 _autopark_task: asyncio.Task[None] | None = None
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    original = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+    if isinstance(original, Exception) and _is_stale_interaction_error(original):
+        logger.warning("Устаревшее slash-взаимодействие: %s", original)
+        return
+    logger.exception("Ошибка app command: %s", error)
+    await _safe_interaction_ephemeral(interaction, "Команда временно недоступна. Попробуйте еще раз.")
 
 
 def _interaction_action_name(interaction: discord.Interaction) -> str | None:
@@ -3167,12 +3302,12 @@ def _autopark_embed(guild: discord.Guild) -> discord.Embed:
     )
     emb.add_field(
         name=f"🟢 Свободные ({len(free)})",
-        value="\n".join(lines_free) if lines_free else "—",
+        value=_embed_lines_value(lines_free),
         inline=False,
     )
     emb.add_field(
         name=f"🔴 Занятые ({len(busy)})",
-        value="\n".join(lines_busy) if lines_busy else "—",
+        value=_embed_lines_value(lines_busy),
         inline=False,
     )
     emb.set_footer(text="")
@@ -3198,7 +3333,7 @@ async def _autopark_refresh_panels(guild_id: int) -> None:
             pass
 
 
-class AutoparkAddModal(discord.ui.Modal, title="Добавить авто в список"):
+class AutoparkAddModal(SafeModal, title="Добавить авто в список"):
     car_key = discord.ui.TextInput(label="Ключ (уникальный ID)", placeholder="Например: PESTONA01", max_length=60)
     label = discord.ui.TextInput(label="Как показывать в списке", placeholder="BMW M5 H90 LCI - PESTONA01", max_length=120)
     note = discord.ui.TextInput(label="Текст под строкой (необязательно)", required=False, style=discord.TextStyle.paragraph, max_length=250)
@@ -3240,6 +3375,91 @@ class AutoparkAddModal(discord.ui.Modal, title="Добавить авто в с�
         await interaction.response.send_message(f"Добавил авто **{label}**.", ephemeral=True)
 
 
+class AutoparkEditModal(SafeModal, title="Изменить авто в списке"):
+    label = discord.ui.TextInput(label="Как показывать в списке", placeholder="BMW M5 H90 LCI - PESTONA01", max_length=120)
+    note = discord.ui.TextInput(label="Текст под строкой (необязательно)", required=False, style=discord.TextStyle.paragraph, max_length=250)
+    role_ids = discord.ui.TextInput(label="ID ролей доступа (через запятую)", required=False, max_length=300, placeholder="Пусто = доступно всем")
+
+    def __init__(self, car: AutoparkCar) -> None:
+        super().__init__(custom_id="consume:autopark_edit_car")
+        self.car_key = car.key
+        self.label.default = car.label
+        self.note.default = car.note
+        self.role_ids.default = ",".join(str(x) for x in car.role_ids)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            return
+        if not _autopark_user_can_manage(interaction.user):
+            await interaction.response.send_message("Нет доступа к редактированию автопарка.", ephemeral=True)
+            return
+        label = str(self.label).strip()
+        note = str(self.note).strip()
+        if not label:
+            await interaction.response.send_message("Название не может быть пустым.", ephemeral=True)
+            return
+        ids = _parse_id_list(str(self.role_ids))
+        if not ids and note:
+            ids = [int(x) for x in re.findall(r"<@&(\d+)>", note)]
+
+        cars = _autopark_load_cars(interaction.guild.id)
+        existing = next((c for c in cars if c.key == self.car_key), None)
+        if existing is None:
+            await interaction.response.send_message("Позиция не найдена (возможно, уже удалена).", ephemeral=True)
+            return
+
+        _autopark_upsert_car(
+            interaction.guild.id,
+            AutoparkCar(
+                key=existing.key,
+                label=label,
+                note=note,
+                role_ids=ids,
+                reserved_by=existing.reserved_by,
+                reserved_until_ts=existing.reserved_until_ts,
+            ),
+        )
+        await _autopark_refresh_panels(interaction.guild.id)
+        await interaction.response.send_message(f"Обновил авто **{label}**.", ephemeral=True)
+
+
+class AutoparkEditSelect(discord.ui.Select):
+    def __init__(self, cars: list[AutoparkCar]) -> None:
+        options = [
+            discord.SelectOption(label=c.label[:100], value=c.key, description=c.key[:100], emoji="✏️")
+            for c in cars[:25]
+        ]
+        super().__init__(
+            placeholder="Выбери авто для изменения...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="consume:autopark_edit_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            return
+        if not _autopark_user_can_manage(interaction.user):
+            await interaction.response.send_message("Нет доступа к редактированию автопарка.", ephemeral=True)
+            return
+        car_key = self.values[0]
+        cars = _autopark_load_cars(interaction.guild.id)
+        car = next((c for c in cars if c.key == car_key), None)
+        if car is None:
+            await interaction.response.send_message("Позиция не найдена.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AutoparkEditModal(car))
+
+
+class AutoparkEditView(SafeView):
+    def __init__(self, cars: list[AutoparkCar]) -> None:
+        super().__init__(timeout=120)
+        self.add_item(AutoparkEditSelect(cars))
+
+
 class AutoparkDeleteSelect(discord.ui.Select):
     def __init__(self, cars: list[AutoparkCar]) -> None:
         options = [
@@ -3270,19 +3490,30 @@ class AutoparkDeleteSelect(discord.ui.Select):
             await interaction.response.send_message("Не удалось удалить позицию.", ephemeral=True)
 
 
-class AutoparkDeleteView(discord.ui.View):
+class AutoparkDeleteView(SafeView):
     def __init__(self, cars: list[AutoparkCar]) -> None:
         super().__init__(timeout=120)
         self.add_item(AutoparkDeleteSelect(cars))
 
 
-class AutoparkEditorView(discord.ui.View):
+class AutoparkEditorView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=180)
 
     @discord.ui.button(label="Добавить авто", emoji="➕", style=discord.ButtonStyle.success)
     async def add_car(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(AutoparkAddModal())
+
+    @discord.ui.button(label="Изменить позицию", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def edit_car(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            return
+        cars = _autopark_load_cars(interaction.guild.id)
+        if not cars:
+            await interaction.response.send_message("Список пуст.", ephemeral=True)
+            return
+        await interaction.response.send_message("Выбери позицию для изменения:", ephemeral=True, view=AutoparkEditView(cars))
 
     @discord.ui.button(label="Удалить из списка", emoji="➖", style=discord.ButtonStyle.danger)
     async def remove_car(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -3305,21 +3536,19 @@ class AutoparkClaimSelect(discord.ui.Select):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Только на сервере.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         key = self.values[0]
         if not _autopark_claim(interaction.guild.id, key, interaction.user.id, AUTOPARK_RESERVE_MINUTES):
-            await interaction.response.send_message("Не удалось занять авто (возможно, уже занято).", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось занять авто (возможно, уже занято).")
             return
         cars = _autopark_load_cars(interaction.guild.id)
         car = next((c for c in cars if c.key == key), None)
         await _autopark_refresh_panels(interaction.guild.id)
         label = car.label if car is not None else key
-        await interaction.response.send_message(
-            f"Ты занял(а) **{label}** на {AUTOPARK_RESERVE_MINUTES} мин.",
-            ephemeral=True,
-        )
+        await _safe_interaction_ephemeral(interaction, f"Ты занял(а) **{label}** на {AUTOPARK_RESERVE_MINUTES} мин.")
 
 
-class AutoparkClaimView(discord.ui.View):
+class AutoparkClaimView(SafeView):
     def __init__(self, cars: list[AutoparkCar]) -> None:
         super().__init__(timeout=120)
         self.add_item(AutoparkClaimSelect(cars))
@@ -3335,28 +3564,26 @@ class AutoparkReleaseSelect(discord.ui.Select):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Только на сервере.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         key = self.values[0]
         ok = _autopark_release(interaction.guild.id, key, interaction.user.id, force=self.force)
         if not ok:
-            await interaction.response.send_message("Не удалось освободить авто.", ephemeral=True)
+            await _safe_interaction_ephemeral(interaction, "Не удалось освободить авто.")
             return
         cars = _autopark_load_cars(interaction.guild.id)
         car = next((c for c in cars if c.key == key), None)
         await _autopark_refresh_panels(interaction.guild.id)
         label = car.label if car is not None else key
-        await interaction.response.send_message(
-            f"✅ Ты освободил **{label}**. Бронь снята.",
-            ephemeral=True,
-        )
+        await _safe_interaction_ephemeral(interaction, f"✅ Ты освободил **{label}**. Бронь снята.")
 
 
-class AutoparkReleaseView(discord.ui.View):
+class AutoparkReleaseView(SafeView):
     def __init__(self, cars: list[AutoparkCar], force: bool) -> None:
         super().__init__(timeout=120)
         self.add_item(AutoparkReleaseSelect(cars, force))
 
 
-class AutoparkPanelView(discord.ui.View):
+class AutoparkPanelView(SafeView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -3400,7 +3627,7 @@ class AutoparkPanelView(discord.ui.View):
         emb = discord.Embed(
             title="Редактирование списка (видно только тебе)",
             description=(
-                "Добавь авто или удали позицию — все панели автопарка на сервере обновятся."
+                "Добавляй, изменяй или удаляй позиции — все панели автопарка на сервере обновятся."
             ),
             color=discord.Color.dark_theme(),
         )
