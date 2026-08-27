@@ -29,6 +29,7 @@ import {
 } from "./kontrakt.js";
 import { buildAutoparkEmbed, autoparkPanelRows, registerPanel } from "./autopark.js";
 import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
+import { logAdminChange } from "./schedulers.js";
 import {
   COLOR_DARK,
   isGuildManager,
@@ -617,6 +618,71 @@ const CHANNEL_PATCH = {
   "c:cfg:c:dmcat": (v) => ({ roleMentionDmCategoryIds: v }),
 };
 
+const CFG_LABELS = {
+  "c:cfg:r:staff": "Стафф тикетов",
+  "c:cfg:r:tping": "Пинг новой заявки",
+  "c:cfg:r:acad": "Роли академии",
+  "c:cfg:r:main": "Роли основы",
+  "c:cfg:r:mod": "Модераторы бота",
+  "c:cfg:r:spam": "Кто может спамить",
+  "c:cfg:r:apmgr": "Менеджеры автопарка",
+  "c:cfg:r:kpost": "Публикация контрактов",
+  "c:cfg:r:kmgr": "Пикнул / Отказ",
+  "c:cfg:r:kping": "Пинг нового контракта",
+  "c:cfg:r:dping": "Роль тега в день",
+  "c:cfg:r:dmtgt": "Кому слать ЛС при пинге",
+  "c:cfg:c:tcat": "Категория тикетов",
+  "c:cfg:c:log": "Канал логов",
+  "c:cfg:c:kontr": "Канал контрактов",
+  "c:cfg:c:dping": "Канал тега в день",
+  "c:cfg:c:dmch": "Каналы слежения ЛС",
+  "c:cfg:c:dmcat": "Категории слежения ЛС",
+};
+
+const MENU_LABELS = {
+  "c:tcat": "Категория тикетов",
+  "r:staff": "Стафф тикетов",
+  "r:tping": "Пинг новой заявки",
+  "r:acad": "Роли академии",
+  "r:main": "Роли основы",
+  "r:apmgr": "Кто правит автопарк",
+  "t:ap": "Минуты брони машины",
+  "c:kontr": "Канал контрактов",
+  "r:kpost": "Кто публикует панель",
+  "r:kmgr": "Пикнул / Отказ",
+  "r:kping": "Пинг нового контракта",
+  "t:rules": "Текст правил контрактов",
+  "r:dping": "Кого тегать",
+  "c:dping": "Куда слать тег",
+  "t:ping": "Текст и время тега",
+  "r:spam": "Кто может спамить",
+  "spam:to": "Запустить спам",
+  "r:dmtgt": "Кому слать ЛС",
+  "c:dmch": "Каналы слежения",
+  "c:dmcat": "Категории слежения",
+  "c:log": "Канал логов",
+  "r:mod": "Роли модераторов",
+  "t:rpacc": "Вкл/выкл приём РП",
+  "t:vzpacc": "Вкл/выкл приём VZP",
+  "pub:apps": "Отправить панель заявок",
+  "pub:maps": "Отправить панель карт",
+  "pub:kontr": "Отправить панель контрактов",
+  "pub:ap": "Отправить панель автопарка",
+  "pub:control": "Отправить админку",
+};
+
+const TAB_LABELS = {
+  panels: "Отправить панели",
+  apps: "Заявки",
+  cars: "Автопарк",
+  kontr: "Контракты",
+  daily: "Тег в день",
+  spam: "Спам",
+  dm: "ЛС при пинге",
+  logs: "Логи",
+  mods: "Модераторы",
+};
+
 async function publishTo(interaction, kind, channel) {
   const ch = channel;
   if (!ch) {
@@ -708,6 +774,7 @@ export async function handleAdminInteraction(interaction) {
       return true;
     }
     await openTopic(interaction, tab);
+    logAdminChange(interaction, "Админка: открыл раздел", [`Раздел: **${TAB_LABELS[tab] || tab}**`]).catch(() => null);
     return true;
   }
 
@@ -728,6 +795,10 @@ export async function handleAdminInteraction(interaction) {
     }
     const ok = await publishTo(interaction, kind, ch);
     if (ok) {
+      logAdminChange(interaction, "Админка: отправил панель", [
+        `Панель: **${PANEL_LABELS[kind] || kind}**`,
+        `Канал: ${ch}`,
+      ]).catch(() => null);
       const title = PANEL_LABELS[kind] || kind;
       const cfg = getConfig(interaction.guildId);
       const lastId = cfg.panelChannels?.[kind === "kontr" ? "kontrakt" : kind === "ap" ? "autopark" : kind];
@@ -765,6 +836,10 @@ export async function handleAdminInteraction(interaction) {
     uiSet(interaction, { tab });
 
     if (value.startsWith("pub:")) {
+      logAdminChange(interaction, "Админка: выбрал пункт", [
+        `Раздел: **${TAB_LABELS[tab] || tab}**`,
+        `Пункт: **${MENU_LABELS[value] || value}**`,
+      ]).catch(() => null);
       const payload = dropPickPayload(interaction.guild, "panels", value);
       try {
         await interaction.update(payload);
@@ -781,18 +856,36 @@ export async function handleAdminInteraction(interaction) {
       const acc = guildAcceptance(interaction.guildId);
       if (value === "t:rpacc") setGuildAcceptance(interaction.guildId, { rp: !acc.rp });
       else setGuildAcceptance(interaction.guildId, { vzp: !acc.vzp });
+      const next = guildAcceptance(interaction.guildId);
+      logAdminChange(interaction, "Админка: изменил приём заявок", [
+        value === "t:rpacc"
+          ? `РП: **${acc.rp ? "открыт" : "закрыт"}** → **${next.rp ? "открыт" : "закрыт"}**`
+          : `VZP: **${acc.vzp ? "открыт" : "закрыт"}** → **${next.vzp ? "открыт" : "закрыт"}**`,
+      ]).catch(() => null);
       await refreshTopic(interaction, "apps");
       return true;
     }
     if (value === "t:rules") {
+      logAdminChange(interaction, "Админка: выбрал пункт", [
+        `Раздел: **${TAB_LABELS[tab] || tab}**`,
+        `Пункт: **${MENU_LABELS[value]}**`,
+      ]).catch(() => null);
       await interaction.showModal(rulesModal(getConfig(interaction.guildId)));
       return true;
     }
     if (value === "t:ping") {
+      logAdminChange(interaction, "Админка: выбрал пункт", [
+        `Раздел: **${TAB_LABELS[tab] || tab}**`,
+        `Пункт: **${MENU_LABELS[value]}**`,
+      ]).catch(() => null);
       await interaction.showModal(pingModal(getConfig(interaction.guildId)));
       return true;
     }
     if (value === "t:ap") {
+      logAdminChange(interaction, "Админка: выбрал пункт", [
+        `Раздел: **${TAB_LABELS[tab] || tab}**`,
+        `Пункт: **${MENU_LABELS[value]}**`,
+      ]).catch(() => null);
       await interaction.showModal(apMinutesModal(getConfig(interaction.guildId)));
       return true;
     }
@@ -805,6 +898,10 @@ export async function handleAdminInteraction(interaction) {
         await safeReply(interaction, "Нет прав на спам.");
         return true;
       }
+      logAdminChange(interaction, "Админка: выбрал пункт", [
+        `Раздел: **${TAB_LABELS[tab] || tab}**`,
+        `Пункт: **${MENU_LABELS[value] || value}**`,
+      ]).catch(() => null);
       const payload = dropPickPayload(interaction.guild, tab, value);
       if (!payload) {
         await safeReply(interaction, "Неизвестный пункт.");
@@ -828,36 +925,92 @@ export async function handleAdminInteraction(interaction) {
   }
 
   if (interaction.isRoleSelectMenu() && ROLE_PATCH[id]) {
-    setConfig(interaction.guildId, ROLE_PATCH[id](interaction.values));
+    const label = CFG_LABELS[id] || id;
+    const before = getConfig(interaction.guildId);
+    const patch = ROLE_PATCH[id](interaction.values);
+    setConfig(interaction.guildId, patch);
+    const key = Object.keys(patch)[0];
+    const oldVal = before[key];
+    const newVal = patch[key];
+    const fmt = (v) =>
+      Array.isArray(v)
+        ? v.length
+          ? mentionRoles(v)
+          : "пусто"
+        : v
+          ? `<@&${v}>`
+          : "пусто";
+    logAdminChange(interaction, "Админка: изменил роли", [
+      `Параметр: **${label}**`,
+      `Было: ${fmt(oldVal)}`,
+      `Стало: ${fmt(newVal)}`,
+    ]).catch(() => null);
     await refreshTopic(interaction, uiGet(interaction).tab || "mods");
     return true;
   }
 
   if (interaction.isChannelSelectMenu() && CHANNEL_PATCH[id]) {
-    setConfig(interaction.guildId, CHANNEL_PATCH[id](interaction.values));
+    const label = CFG_LABELS[id] || id;
+    const before = getConfig(interaction.guildId);
+    const patch = CHANNEL_PATCH[id](interaction.values);
+    setConfig(interaction.guildId, patch);
+    const key = Object.keys(patch)[0];
+    const oldVal = before[key];
+    const newVal = patch[key];
+    const fmt = (v) =>
+      Array.isArray(v)
+        ? v.length
+          ? mentionChannels(v)
+          : "пусто"
+        : v
+          ? `<#${v}>`
+          : "пусто";
+    logAdminChange(interaction, "Админка: изменил каналы", [
+      `Параметр: **${label}**`,
+      `Было: ${fmt(oldVal)}`,
+      `Стало: ${fmt(newVal)}`,
+    ]).catch(() => null);
     await refreshTopic(interaction, uiGet(interaction).tab || "mods");
     return true;
   }
 
   if (interaction.isModalSubmit() && id === "c:cfg:m:rules") {
-    setConfig(interaction.guildId, { kontraktRulesText: interaction.fields.getTextInputValue("text").trim() });
+    const text = interaction.fields.getTextInputValue("text").trim();
+    setConfig(interaction.guildId, { kontraktRulesText: text });
+    logAdminChange(interaction, "Админка: изменил правила контрактов", [
+      `Длина текста: **${text.length}** символов`,
+      `Превью: ${text.slice(0, 120) || "пусто"}${text.length > 120 ? "…" : ""}`,
+    ]).catch(() => null);
     await refreshTopic(interaction, "kontr");
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:ping") {
     const iv = Number(interaction.fields.getTextInputValue("iv") || 23);
+    const msg = (interaction.fields.getTextInputValue("msg") || "").trim();
+    const times = (interaction.fields.getTextInputValue("times") || "").trim();
+    const tz = (interaction.fields.getTextInputValue("tz") || "Europe/Moscow").trim() || "Europe/Moscow";
     setConfig(interaction.guildId, {
-      dailyRolePingMessage: (interaction.fields.getTextInputValue("msg") || "").trim(),
-      dailyRolePingTimes: (interaction.fields.getTextInputValue("times") || "").trim(),
-      dailyRolePingTimezone: (interaction.fields.getTextInputValue("tz") || "Europe/Moscow").trim() || "Europe/Moscow",
+      dailyRolePingMessage: msg,
+      dailyRolePingTimes: times,
+      dailyRolePingTimezone: tz,
       dailyRolePingIntervalHours: Math.max(1, Math.min(168, Number.isFinite(iv) ? iv : 23)),
     });
+    logAdminChange(interaction, "Админка: изменил тег в день", [
+      `Текст: ${msg.slice(0, 100) || "пусто"}${msg.length > 100 ? "…" : ""}`,
+      `Времена: ${times || "—"}`,
+      `Часовой пояс: ${tz}`,
+      `Интервал (ч): ${Math.max(1, Math.min(168, Number.isFinite(iv) ? iv : 23))}`,
+    ]).catch(() => null);
     await refreshTopic(interaction, "daily");
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:ap") {
     const mins = Math.max(1, Number(interaction.fields.getTextInputValue("mins")) || 60);
+    const before = getConfig(interaction.guildId).autoparkReserveMinutes;
     setConfig(interaction.guildId, { autoparkReserveMinutes: mins });
+    logAdminChange(interaction, "Админка: изменил автопарк", [
+      `Минуты брони: **${before}** → **${mins}**`,
+    ]).catch(() => null);
     await refreshTopic(interaction, "cars");
     return true;
   }

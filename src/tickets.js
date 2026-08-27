@@ -71,10 +71,13 @@ export function setGuildAcceptance(guildId, patch) {
   return { rp: Boolean(g.rp), vzp: Boolean(g.vzp) };
 }
 
+/** Минимальный номер следующего тикета (на чистом деплое не сбрасывается в 1). */
+const MIN_NEXT_TICKET_NO = 4017;
+
 function nextTicketNo(guildId) {
   const data = ticketsState();
   const key = String(guildId);
-  const n = Number(data.counter[key] || 0) + 1;
+  const n = Math.max(Number(data.counter[key] || 0) + 1, MIN_NEXT_TICKET_NO);
   data.counter[key] = n;
   saveTickets(data);
   return n;

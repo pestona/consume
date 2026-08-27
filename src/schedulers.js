@@ -199,37 +199,62 @@ async function dmRoleMentionBroadcast(message, targetRoles) {
 }
 
 export async function logBotAction(interaction) {
-  if (!interaction.guildId) return;
+  if (!interaction.guildId || interaction.user?.bot) return;
+  if (!interaction.isChatInputCommand?.()) return;
   const cfg = getConfig(interaction.guildId);
   if (!cfg.botActionLogChannelId) return;
-  const action = actionName(interaction);
-  if (!action) return;
-  if (interaction.user?.bot) return;
 
   const guild = interaction.guild;
   const logCh = guild?.channels.cache.get(String(cfg.botActionLogChannelId));
   if (!logCh?.isTextBased?.()) return;
 
-  const who = `${interaction.user} (\`${interaction.user.tag}\` · \`${interaction.user.id}\`)`;
-  const where = interaction.channelId ? `<#${interaction.channelId}>` : "—";
+  const name = interaction.commandName === "sbor" ? "сбор" : interaction.commandName;
   const detail = actionDetail(interaction);
-
   const emb = new EmbedBuilder()
     .setColor(COLOR_DARK)
-    .setTitle(action)
+    .setTitle(`Команда /${name}`)
     .addFields(
-      { name: "Кто", value: who, inline: false },
-      { name: "Где", value: where, inline: true },
-      { name: "Сервер", value: guild?.name || interaction.guildId, inline: true },
+      { name: "Кто", value: `${interaction.user} (\`${interaction.user.tag}\`)`, inline: false },
+      { name: "Где", value: interaction.channelId ? `<#${interaction.channelId}>` : "—", inline: true },
     )
     .setTimestamp(new Date())
-    .setFooter({ text: "Лог действий бота" });
-  if (detail) emb.addFields({ name: "Детали", value: detail.slice(0, 1000), inline: false });
+    .setFooter({ text: "Лог команд" });
+  if (detail) emb.addFields({ name: "Параметры", value: detail.slice(0, 1000), inline: false });
 
   try {
     await logCh.send({ embeds: [emb] });
   } catch (err) {
-    logJson("WARN", "Не удалось отправить лог действия", { error: String(err) });
+    logJson("WARN", "Не удалось отправить лог команды", { error: String(err) });
+  }
+}
+
+/** Лог изменений / выбора в админке. */
+export async function logAdminChange(interaction, title, changes) {
+  if (!interaction.guildId || interaction.user?.bot) return;
+  const cfg = getConfig(interaction.guildId);
+  if (!cfg.botActionLogChannelId) return;
+  const logCh = interaction.guild?.channels.cache.get(String(cfg.botActionLogChannelId));
+  if (!logCh?.isTextBased?.()) return;
+
+  const lines = Array.isArray(changes) ? changes.filter(Boolean) : [String(changes || "")];
+  const emb = new EmbedBuilder()
+    .setColor(COLOR_DARK)
+    .setTitle(title)
+    .addFields(
+      { name: "Кто", value: `${interaction.user} (\`${interaction.user.tag}\`)`, inline: false },
+      {
+        name: "Что изменил / выбрал",
+        value: (lines.length ? lines.map((l) => `• ${l}`).join("\n") : "—").slice(0, 1000),
+        inline: false,
+      },
+    )
+    .setTimestamp(new Date())
+    .setFooter({ text: "Лог админки" });
+
+  try {
+    await logCh.send({ embeds: [emb] });
+  } catch (err) {
+    logJson("WARN", "Не удалось отправить лог админки", { error: String(err) });
   }
 }
 
@@ -245,66 +270,5 @@ function actionDetail(interaction) {
       })
       .join("\n");
   }
-  if (interaction.isStringSelectMenu?.()) {
-    const vals = interaction.values || [];
-    return vals.length ? `Выбрано: ${vals.map((v) => `\`${v}\``).join(", ")}` : null;
-  }
-  if (interaction.isRoleSelectMenu?.()) {
-    return `Роли: ${interaction.values.map((id) => `<@&${id}>`).join(" ")}`;
-  }
-  if (interaction.isChannelSelectMenu?.()) {
-    return `Каналы: ${interaction.values.map((id) => `<#${id}>`).join(" ")}`;
-  }
-  if (interaction.isUserSelectMenu?.()) {
-    return `Юзеры: ${interaction.values.map((id) => `<@${id}>`).join(" ")}`;
-  }
-  return null;
-}
-
-function actionName(interaction) {
-  const labels = {
-    "c:mod:rp": "Модерация: приём РП",
-    "c:mod:vzp": "Модерация: приём VZP",
-    "c:app:select": "Заявки: выбор типа",
-    "c:map:select": "Карты VZP: выбор карты",
-    "c:k:propose": "Контракты: форма предложения",
-    "c:k:form": "Контракты: отправил предложение",
-    "c:k:join": "Контракты: записался",
-    "c:k:pinged": "Контракты: Пикнул",
-    "c:k:reject": "Контракты: отказ",
-    "c:sbor:main": "Сбор: в основу",
-    "c:sbor:res": "Сбор: на замену",
-    "c:sbor:leave": "Сбор: вышел",
-    "c:sbor:mod": "Сбор: модерация списка",
-    "c:sbor:modc": "Сбор: модерация списка",
-    "c:sbor:form": "Сбор: создал сбор",
-    "c:ap:take": "Автопарк: бронь",
-    "c:ap:rel": "Автопарк: освободить",
-    "c:ap:edit": "Автопарк: редактор",
-    "c:app:rp": "Заявки: отправил РП",
-    "c:app:vzp": "Заявки: отправил VZP",
-    "c:spam:role": "Спам: выбрал роль",
-    "c:spam:form": "Спам: отправил текст",
-  };
-  if (interaction.isChatInputCommand?.()) {
-    const name = interaction.commandName === "sbor" ? "сбор" : interaction.commandName;
-    return `Команда /${name}`;
-  }
-  const cid = String(interaction.customId || "");
-  if (labels[cid]) return labels[cid];
-  if (cid.startsWith("c:adm:tab:")) return `Админка: раздел ${cid.slice("c:adm:tab:".length)}`;
-  if (cid.startsWith("c:adm:send:")) return `Админка: отправил панель (${cid.slice("c:adm:send:".length)})`;
-  if (cid.startsWith("c:adm:cfg:")) return `Админка: настройка (${cid.slice("c:adm:cfg:".length)})`;
-  if (cid.startsWith("c:adm:back:")) return `Админка: назад`;
-  if (cid.startsWith("c:cfg:r:")) return `Админка: выбрал роли`;
-  if (cid.startsWith("c:cfg:c:")) return `Админка: выбрал каналы`;
-  if (cid.startsWith("c:cfg:m:")) return `Админка: сохранил форму`;
-  if (cid.startsWith("c:sbor:ok:")) return "Сбор: отметил основу";
-  if (cid.startsWith("c:sbor:kick:")) return "Сбор: выписал";
-  if (cid.startsWith("c:sbor:toggle:")) return "Сбор: открыл/закрыл запись";
-  if (cid.startsWith("c:ticket:") || cid.startsWith("c:t:")) return `Тикет: ${cid}`;
-  if (interaction.isButton?.()) return `Кнопка`;
-  if (interaction.isAnySelectMenu?.()) return `Выбор в меню`;
-  if (interaction.isModalSubmit?.()) return `Форма`;
   return null;
 }
