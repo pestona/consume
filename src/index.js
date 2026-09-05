@@ -8,6 +8,12 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { handlePanelCommand, handleAdminInteraction } from "./adminPanel.js";
+import {
+  handleActivityAdmin,
+  trackMessageActivity,
+  trackReactionActivity,
+  trackVoiceActivity,
+} from "./activity.js";
 import { handleTicketInteraction } from "./tickets.js";
 import { handleMapsInteraction } from "./maps.js";
 import { handleKontraktInteraction } from "./kontrakt.js";
@@ -28,9 +34,11 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
 });
 
 function buildCommands() {
@@ -107,7 +115,26 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.MessageCreate, (message) => {
+  trackMessageActivity(message);
   onGuildMessage(message).catch((err) => logJson("ERROR", "on message", { error: String(err) }));
+});
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  try {
+    trackVoiceActivity(oldState, newState);
+  } catch (err) {
+    logJson("ERROR", "voice activity", { error: String(err) });
+  }
+});
+
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    if (reaction.partial) await reaction.fetch().catch(() => null);
+    if (user.partial) await user.fetch().catch(() => null);
+    trackReactionActivity(reaction, user);
+  } catch (err) {
+    logJson("ERROR", "reaction activity", { error: String(err) });
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -123,6 +150,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     const handlers = [
+      handleActivityAdmin,
       handleAdminInteraction,
       handleTicketInteraction,
       handleMapsInteraction,

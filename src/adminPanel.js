@@ -155,6 +155,9 @@ function hubPayload(guild) {
       btn("c:adm:tab:mods", "Модераторы", "🛡️"),
       btn("c:adm:tab:summary", "Сводка", "📊"),
     ),
+    new ActionRowBuilder().addComponents(
+      btn("c:adm:tab:stats", "Статистика активности", "📈", ButtonStyle.Primary),
+    ),
   ]);
 }
 
@@ -809,6 +812,7 @@ export async function handleAdminInteraction(interaction) {
 
   const tabOpen = id.match(/^c:adm:tab:(.+)$/);
   if (interaction.isButton() && tabOpen) {
+    if (tabOpen[1] === "stats") return false;
     const tab =
       {
         home: "summary",
