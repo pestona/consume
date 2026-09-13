@@ -72,7 +72,7 @@ export function setGuildAcceptance(guildId, patch) {
 }
 
 /** Минимальный номер следующего тикета (на чистом деплое не сбрасывается в 1). */
-const MIN_NEXT_TICKET_NO = 4017;
+const MIN_NEXT_TICKET_NO = 4169;
 
 function nextTicketNo(guildId) {
   const data = ticketsState();
