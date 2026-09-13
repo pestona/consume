@@ -78,20 +78,21 @@ function load() {
 
 function save(opts = {}) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  const guilds = Object.keys(state.guildConfig || {}).length;
-  // Не затираем залитую базу пустым state (типичный race после upload на Railway)
-  if (!opts.force && guilds === 0 && fs.existsSync(DB_PATH)) {
-    const existing = tryRead(DB_PATH);
-    const existingGuilds = Object.keys(existing?.guildConfig || {}).length;
-    if (existingGuilds > 0) {
-      console.error(
-        `[WARN] save() отменён: в RAM пустой guildConfig, а на диске guilds=${existingGuilds}. Перечитываю диск.`,
-      );
-      state = existing;
-      return;
+  const body = JSON.stringify(state);
+  // Не затираем свежезалитый больший bot.json урезанным state из RAM
+  if (!opts.force && fs.existsSync(DB_PATH)) {
+    const diskSize = fs.statSync(DB_PATH).size;
+    if (diskSize > body.length * 1.5 && diskSize > 4000) {
+      const existing = tryRead(DB_PATH);
+      if (existing && Object.keys(existing.guildConfig || {}).length > 0) {
+        console.error(
+          `[WARN] save() отменён: диск ${diskSize}b > RAM ${body.length}b. Перечитываю bot.json.`,
+        );
+        state = existing;
+        return;
+      }
     }
   }
-  const body = JSON.stringify(state);
   fs.writeFileSync(DB_TMP, body);
   try {
     if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, DB_BAK);
@@ -101,19 +102,44 @@ function save(opts = {}) {
   fs.renameSync(DB_TMP, DB_PATH);
 }
 
+let lastDiskCheck = 0;
+/** Если на volume внезапно появился больший bot.json (после upload) — подхватываем без редеплоя */
+export function maybeReloadFromDisk() {
+  const now = Date.now();
+  if (now - lastDiskCheck < 2000) return;
+  lastDiskCheck = now;
+  try {
+    if (!fs.existsSync(DB_PATH)) return;
+    const diskSize = fs.statSync(DB_PATH).size;
+    const memSize = JSON.stringify(state).length;
+    if (diskSize > memSize * 1.5 && diskSize > 4000) {
+      const existing = tryRead(DB_PATH);
+      if (existing) {
+        state = existing;
+        console.log(`[INFO] bot.json перечитан с диска: ${diskSize}b guilds=${Object.keys(state.guildConfig || {}).length}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[WARN] maybeReloadFromDisk: ${String(err)}`);
+  }
+}
+
 load();
 
 export function kvGet(key) {
+  maybeReloadFromDisk();
   const v = state.kv[key];
   return v && typeof v === "object" ? v : null;
 }
 
 export function kvSet(key, value) {
+  maybeReloadFromDisk();
   state.kv[key] = value;
   save();
 }
 
 export function getGuildConfigRaw(guildId) {
+  maybeReloadFromDisk();
   return state.guildConfig[String(guildId)] || null;
 }
 

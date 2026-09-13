@@ -57,7 +57,24 @@ function flush() {
   if (!dirty) return;
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(ACT_TMP, JSON.stringify(store));
+    const body = JSON.stringify(store);
+    if (fs.existsSync(ACT_PATH)) {
+      const diskSize = fs.statSync(ACT_PATH).size;
+      if (diskSize > body.length * 1.5 && diskSize > 4000) {
+        const raw = fs.readFileSync(ACT_PATH, "utf8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          store = parsed;
+          dirty = false;
+          logJson("WARN", "activity.json save отменён — перечитал больший файл с диска", {
+            disk: diskSize,
+            ram: body.length,
+          });
+          return;
+        }
+      }
+    }
+    fs.writeFileSync(ACT_TMP, body);
     fs.renameSync(ACT_TMP, ACT_PATH);
     dirty = false;
   } catch (err) {
