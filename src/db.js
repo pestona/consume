@@ -41,6 +41,25 @@ function normalize(parsed) {
   return next;
 }
 
+function applyEnvRestore(filePath, envName) {
+  const b64 = (process.env[envName] || "").trim();
+  if (!b64) return false;
+  try {
+    const buf = Buffer.from(b64, "base64");
+    if (buf.length < 100) {
+      console.error(`[ERROR] ${envName}: слишком короткий payload (${buf.length}b)`);
+      return false;
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, buf);
+    console.log(`[INFO] ${envName}: записан ${filePath} (${buf.length}b)`);
+    return true;
+  } catch (err) {
+    console.error(`[ERROR] ${envName}: ${String(err)}`);
+    return false;
+  }
+}
+
 function tryRead(filePath) {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
@@ -54,6 +73,7 @@ function tryRead(filePath) {
 
 function load() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  applyEnvRestore(DB_PATH, "RESTORE_BOT_JSON_B64");
   const size = fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0;
   console.log(`[INFO] DATA_DIR=${DATA_DIR} bot.json=${size}b cwd=${process.cwd()}`);
   const primary = tryRead(DB_PATH);

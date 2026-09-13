@@ -37,6 +37,15 @@ let saveTimer = null;
 
 function load() {
   try {
+    const b64 = (process.env.RESTORE_ACTIVITY_JSON_B64 || "").trim();
+    if (b64) {
+      const buf = Buffer.from(b64, "base64");
+      if (buf.length >= 100) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        fs.writeFileSync(ACT_PATH, buf);
+        console.log(`[INFO] RESTORE_ACTIVITY_JSON_B64: записан ${ACT_PATH} (${buf.length}b)`);
+      }
+    }
     if (!fs.existsSync(ACT_PATH)) {
       console.log(`[INFO] activity.json нет в ${DATA_DIR}`);
       return;
