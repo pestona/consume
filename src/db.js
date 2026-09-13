@@ -3,7 +3,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const DATA_DIR = path.join(ROOT, "data");
+function resolveDataDir() {
+  if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR);
+  // Railway volume обычно смонтирован сюда
+  if (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID) {
+    return "/app/data";
+  }
+  return path.join(ROOT, "data");
+}
+export const DATA_DIR = resolveDataDir();
 const DB_PATH = path.join(DATA_DIR, "bot.json");
 const DB_TMP = path.join(DATA_DIR, "bot.json.tmp");
 const DB_BAK = path.join(DATA_DIR, "bot.json.bak");
@@ -38,31 +46,51 @@ function tryRead(filePath) {
     const raw = fs.readFileSync(filePath, "utf8");
     if (!raw.trim()) return null;
     return normalize(JSON.parse(raw));
-  } catch {
+  } catch (err) {
+    console.error(`[ERROR] не прочитан ${filePath}: ${String(err)}`);
     return null;
   }
 }
 
 function load() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const size = fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0;
+  console.log(`[INFO] DATA_DIR=${DATA_DIR} bot.json=${size}b cwd=${process.cwd()}`);
   const primary = tryRead(DB_PATH);
   if (primary) {
     state = primary;
+    const guilds = Object.keys(state.guildConfig || {}).length;
+    console.log(`[INFO] bot.json загружен: guilds=${guilds} kv=${Object.keys(state.kv || {}).length}`);
     return;
   }
   const bak = tryRead(DB_BAK);
   if (bak) {
     state = bak;
     console.error("[WARN] bot.json повреждён — восстановлен из bot.json.bak");
-    save();
+    save({ force: true });
     return;
   }
   state = empty();
-  if (!fs.existsSync(DB_PATH)) save();
+  if (!fs.existsSync(DB_PATH)) save({ force: true });
   else console.error("[ERROR] bot.json повреждён и бэкапа нет — стартую с пустым state (файл не затёр)");
+  console.log("[WARN] bot.json пустой — старт с чистого state");
 }
 
-function save() {
+function save(opts = {}) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  const guilds = Object.keys(state.guildConfig || {}).length;
+  // Не затираем залитую базу пустым state (типичный race после upload на Railway)
+  if (!opts.force && guilds === 0 && fs.existsSync(DB_PATH)) {
+    const existing = tryRead(DB_PATH);
+    const existingGuilds = Object.keys(existing?.guildConfig || {}).length;
+    if (existingGuilds > 0) {
+      console.error(
+        `[WARN] save() отменён: в RAM пустой guildConfig, а на диске guilds=${existingGuilds}. Перечитываю диск.`,
+      );
+      state = existing;
+      return;
+    }
+  }
   const body = JSON.stringify(state);
   fs.writeFileSync(DB_TMP, body);
   try {

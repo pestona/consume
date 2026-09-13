@@ -16,7 +16,11 @@ import { canOpenPanel } from "./perms.js";
 import { COLOR_DARK, formatDateTimeRu, logJson, MSK, safeReply, withLock } from "./util.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DATA_DIR = path.join(ROOT, "data");
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID
+    ? "/app/data"
+    : path.join(ROOT, "data");
 const ACT_PATH = path.join(DATA_DIR, "activity.json");
 const ACT_TMP = path.join(DATA_DIR, "activity.json.tmp");
 
@@ -33,11 +37,16 @@ let saveTimer = null;
 
 function load() {
   try {
-    if (!fs.existsSync(ACT_PATH)) return;
+    if (!fs.existsSync(ACT_PATH)) {
+      console.log(`[INFO] activity.json нет в ${DATA_DIR}`);
+      return;
+    }
     const raw = fs.readFileSync(ACT_PATH, "utf8");
     if (!raw.trim()) return;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") store = parsed;
+    const guilds = Object.keys(store).length;
+    console.log(`[INFO] activity.json загружен: guilds=${guilds} size=${raw.length}b path=${ACT_PATH}`);
   } catch (err) {
     logJson("WARN", "activity.json не прочитан", { error: String(err) });
     store = {};
