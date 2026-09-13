@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 data/
+railway-backup/
 __pycache__/
 *.py[cod]
 .venv/
