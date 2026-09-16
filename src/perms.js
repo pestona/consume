@@ -59,28 +59,3 @@ export async function canManageAutopark(interaction) {
   const cfg = getConfig(interaction.guildId);
   return hasAnyRole(member, cfg.autoparkManagerRoleIds);
 }
-
-export function canTriggerRoleMentionDm(member, cfg) {
-  if (!cfg.roleMentionDmTriggerRoleIds?.length) return true;
-  return hasAnyRole(member, cfg.roleMentionDmTriggerRoleIds);
-}
-
-export function mentionWatchMatchesChannel(channel, cfg) {
-  const channelId = channel.id;
-  const parentId = channel.parentId ?? channel.parent?.id ?? null;
-  let categoryId = channel.parentId ?? null;
-  if (channel.isThread?.()) {
-    categoryId = channel.parent?.parentId ?? channel.parent?.parent?.id ?? null;
-  } else {
-    categoryId = channel.parentId ?? null;
-  }
-
-  const chIds = (cfg.roleMentionDmChannelIds || []).map(String);
-  const catIds = (cfg.roleMentionDmCategoryIds || []).map(String);
-  if (chIds.length) {
-    if (chIds.includes(String(channelId))) return true;
-    if (parentId && chIds.includes(String(parentId))) return true;
-  }
-  if (catIds.length && categoryId && catIds.includes(String(categoryId))) return true;
-  return false;
-}

@@ -1,7 +1,7 @@
 import { getGuildConfigRaw, setGuildConfigRaw } from "./db.js";
 
 export const DEFAULT_KONTRAKT_RULES =
-  "Здесь будут правила контрактов.\n\nЗадайте текст в панели бота: Настройки → Тексты и время.";
+  "Здесь будут правила контрактов.\n\nЗадайте текст в панели бота: Контракты → Текст правил.";
 
 export function defaultConfig() {
   return {
@@ -12,16 +12,12 @@ export function defaultConfig() {
     acceptRoleIdsAcademy: [],
     acceptRoleIdsMain: [],
     botActionLogChannelId: null,
-    roleMentionDmTargetRoleIds: [],
-    roleMentionDmCategoryIds: [],
-    roleMentionDmChannelIds: [],
-    roleMentionDmTriggerRoleIds: [],
-    dailyRolePingChannelId: null,
-    dailyRolePingRoleId: null,
-    dailyRolePingIntervalHours: 23,
-    dailyRolePingMessage: "",
-    dailyRolePingTimes: "",
-    dailyRolePingTimezone: "Europe/Moscow",
+    modLogChannelId: null,
+    leaveLogChannelId: null,
+    leaveLogPingRoleId: null,
+    familyRoleIds: [],
+    tempVoiceCreateChannelId: null,
+    tempVoiceCategoryId: null,
     kontraktChannelId: null,
     kontraktPostRoleIds: [],
     kontraktManagerRoleIds: [],
@@ -30,6 +26,13 @@ export function defaultConfig() {
     spamCommandRoleIds: [],
     autoparkManagerRoleIds: [],
     autoparkReserveMinutes: 60,
+    antinukeEnabled: true,
+    antinukeBanLimit: 10,
+    antinukeBanWindowSec: 60,
+    antinukeChannelDeleteLimit: 8,
+    antinukeChannelDeleteWindowSec: 60,
+    antinukeWhitelistRoleIds: [],
+    antinukeWhitelistUserIds: [],
     publishChannelId: null,
     controlMessageId: null,
     panelChannels: {
@@ -38,6 +41,7 @@ export function defaultConfig() {
       maps: null,
       kontrakt: null,
       autopark: null,
+      voice: null,
     },
   };
 }
@@ -65,24 +69,4 @@ export function setConfig(guildId, patch) {
 
 export function roleIdsOrModeration(cfg, ids) {
   return ids?.length ? ids.map(String) : (cfg.moderatorRoleIds || []).map(String);
-}
-
-export function parseDailyTimes(raw) {
-  const out = [];
-  const seen = new Set();
-  for (const part of String(raw || "").split(",")) {
-    const bit = part.trim();
-    if (!bit) continue;
-    const m = bit.match(/^(\d{1,2}):(\d{2})$/);
-    if (!m) continue;
-    const h = Number(m[1]);
-    const min = Number(m[2]);
-    if (h > 23 || min > 59) continue;
-    const key = `${h}:${min}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push([h, min]);
-    }
-  }
-  return out;
 }

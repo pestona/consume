@@ -14,6 +14,7 @@ import {
   TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuBuilder,
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,6 +29,8 @@ import {
   kontraktPanelRows,
 } from "./kontrakt.js";
 import { buildAutoparkEmbed, autoparkPanelRows, registerPanel } from "./autopark.js";
+import { tempVoicePanelPayload } from "./tempVoice.js";
+import { createChannelBackup, getChannelBackupMeta, restoreChannelBackup } from "./channelBackup.js";
 import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
 import { logAdminChange } from "./schedulers.js";
 import {
@@ -108,6 +111,17 @@ function channelSelect(guild, customId, placeholder, types, ids, max = 1) {
   return new ActionRowBuilder().addComponents(builder);
 }
 
+function userSelect(customId, placeholder, ids, max = 25) {
+  const present = (ids || []).map(String).slice(0, max);
+  const builder = new UserSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder(placeholder)
+    .setMinValues(0)
+    .setMaxValues(max);
+  if (present.length) builder.setDefaultUsers(present);
+  return new ActionRowBuilder().addComponents(builder);
+}
+
 function btn(id, label, emoji, style = ButtonStyle.Secondary) {
   const b = new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
   if (emoji) b.setEmoji(emoji);
@@ -132,31 +146,30 @@ function panelLine(cfg, key, label) {
 
 function hubPayload(guild) {
   const cfg = getConfig(guild.id);
-  const acc = guildAcceptance(guild.id);
   const body =
     `Выбери раздел — у каждого своя настройка.\n\n` +
-    `${mark(cfg.ticketCategoryId)} Заявки · ${mark(acc.rp && acc.vzp)} принятие\n` +
-    `${mark(cfg.autoparkManagerRoleIds?.length)} Автопарк · ${mark(cfg.kontraktChannelId)} контракты\n` +
-    `${mark(cfg.dailyRolePingChannelId && cfg.dailyRolePingRoleId)} Тег в день · ${mark(cfg.botActionLogChannelId)} логи\n\n` +
+    `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
+    `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
+    `${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
     `Сборы: команда **/сбор**`;
 
   return v2Message("Админка Consume", body, [
     new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:panels", "Отправить панели", "📤", ButtonStyle.Primary),
+      btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
       btn("c:adm:tab:apps", "Заявки", "🎫"),
-      btn("c:adm:tab:cars", "Автопарк", "🚗"),
+      btn("c:adm:tab:cars", "Машины", "🚗"),
       btn("c:adm:tab:kontr", "Контракты", "📜"),
-      btn("c:adm:tab:daily", "Тег в день", "⏰"),
+      btn("c:adm:tab:spam", "Спам", "📣", ButtonStyle.Danger),
     ),
     new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:spam", "Спам", "📣", ButtonStyle.Danger),
-      btn("c:adm:tab:dm", "ЛС при пинге", "💬"),
       btn("c:adm:tab:logs", "Логи", "📋"),
       btn("c:adm:tab:mods", "Модераторы", "🛡️"),
+      btn("c:adm:tab:rooms", "Комнаты", "🔊"),
+      btn("c:adm:tab:protect", "Защита", "🚨", ButtonStyle.Danger),
       btn("c:adm:tab:summary", "Сводка", "📊"),
     ),
     new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:stats", "Статистика активности", "📈", ButtonStyle.Primary),
+      btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
     ),
   ]);
 }
@@ -167,12 +180,13 @@ function topicStatus(guild, tab, ui) {
 
   if (tab === "panels") {
     return {
-      title: "Отправить панели",
+      title: "Панели",
       body:
         `${panelLine(cfg, "apps", "Заявки")}\n` +
         `${panelLine(cfg, "maps", "Карты")}\n` +
         `${panelLine(cfg, "kontrakt", "Контракты")}\n` +
-        `${panelLine(cfg, "autopark", "Автопарк")}\n` +
+        `${panelLine(cfg, "autopark", "Машины")}\n` +
+        `${panelLine(cfg, "voice", "Комнаты")}\n` +
         `${panelLine(cfg, "control", "Админка")}\n\n` +
         "Сначала панель — потом канал только для неё.",
       options: [
@@ -180,6 +194,7 @@ function topicStatus(guild, tab, ui) {
         { label: "Панель карт VZP", value: "pub:maps", emoji: "🗺️", description: "Куда отправить" },
         { label: "Панель контрактов", value: "pub:kontr", emoji: "📜", description: "Куда отправить" },
         { label: "Панель автопарка", value: "pub:ap", emoji: "🚗", description: "Куда отправить" },
+        { label: "Панель комнат", value: "pub:voice", emoji: "🔊", description: "Управление войсами" },
         { label: "Эту админку", value: "pub:control", emoji: "📋", description: "Куда отправить" },
       ],
       placeholder: "Какую панель отправить?",
@@ -210,17 +225,17 @@ function topicStatus(guild, tab, ui) {
   }
   if (tab === "cars") {
     return {
-      title: "Автопарк",
+      title: "Машины",
       body:
         `Менеджеры: ${mentionRoles(cfg.autoparkManagerRoleIds)}\n` +
         `Бронь: **${cfg.autoparkReserveMinutes || 60}** мин\n` +
         `${panelLine(cfg, "autopark", "Панель")}\n\n` +
         "Всё, что связано с машинами.",
       options: [
-        { label: "Кто правит автопарк", value: "r:apmgr", emoji: "🛡️", description: "Менеджеры списка" },
+        { label: "Кто правит машины", value: "r:apmgr", emoji: "🛡️", description: "Менеджеры списка" },
         { label: "Минуты брони машины", value: "t:ap", emoji: "⏱️", description: "Сколько держать бронь" },
       ],
-      placeholder: "Что настроить в автопарке?",
+      placeholder: "Что настроить в машинах?",
     };
   }
   if (tab === "kontr") {
@@ -242,24 +257,6 @@ function topicStatus(guild, tab, ui) {
       placeholder: "Что настроить в контрактах?",
     };
   }
-  if (tab === "daily") {
-    return {
-      title: "Тег раз в день",
-      body:
-        `Роль: ${cfg.dailyRolePingRoleId ? `<@&${cfg.dailyRolePingRoleId}>` : "не задана"}\n` +
-        `Канал: ${fmtCh(cfg.dailyRolePingChannelId)}\n` +
-        `Текст: ${(cfg.dailyRolePingMessage || "—").slice(0, 80)}\n` +
-        `Время: ${cfg.dailyRolePingTimes || `каждые ${cfg.dailyRolePingIntervalHours || 23} ч`}\n` +
-        `Часовой пояс: ${cfg.dailyRolePingTimezone || "Europe/Moscow"}\n\n` +
-        "Ежедневный пинг роли в канал.",
-      options: [
-        { label: "Кого тегать", value: "r:dping", emoji: "🛡️", description: "Роль для пинга" },
-        { label: "Куда слать тег", value: "c:dping", emoji: "📁", description: "Канал пинга" },
-        { label: "Текст и время", value: "t:ping", emoji: "⏰", description: "Сообщение и расписание" },
-      ],
-      placeholder: "Что настроить в теге?",
-    };
-  }
   if (tab === "spam") {
     return {
       title: "Спам",
@@ -273,28 +270,39 @@ function topicStatus(guild, tab, ui) {
       placeholder: "Что сделать со спамом?",
     };
   }
-  if (tab === "dm") {
-    return {
-      title: "ЛС при пинге роли",
-      body:
-        `Кому: ${mentionRoles(cfg.roleMentionDmTargetRoleIds)}\n` +
-        `Каналы: ${mentionChannels(cfg.roleMentionDmChannelIds)}\n` +
-        `Категории: ${mentionChannels(cfg.roleMentionDmCategoryIds)}\n\n` +
-        "Если роль пингуют в канале — бот пишет в ЛС.",
-      options: [
-        { label: "Кому слать ЛС", value: "r:dmtgt", emoji: "🛡️", description: "Целевые роли" },
-        { label: "В каких каналах ловить", value: "c:dmch", emoji: "📁", description: "Каналы слежения" },
-        { label: "В каких категориях", value: "c:dmcat", emoji: "📂", description: "Категории каналов" },
-      ],
-      placeholder: "Что настроить в ЛС?",
-    };
-  }
   if (tab === "logs") {
     return {
-      title: "Логи бота",
-      body: `Канал логов: ${fmtCh(cfg.botActionLogChannelId)}\n\nКуда писать действия бота.`,
-      options: [{ label: "Канал логов", value: "c:log", emoji: "📋", description: "Выбрать канал" }],
-      placeholder: "Куда писать логи?",
+      title: "Логи",
+      body:
+        `Действия бота: ${fmtCh(cfg.botActionLogChannelId)}\n` +
+        `Баны / кики: ${fmtCh(cfg.modLogChannelId)}\n` +
+        `Выход с сервера: ${fmtCh(cfg.leaveLogChannelId)}\n` +
+        `Пинг при выходе: ${cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : "—"}\n\n` +
+        "Каналы логов по типу событий.",
+      options: [
+        { label: "Лог действий бота", value: "c:log", emoji: "📋", description: "Админка / команды" },
+        { label: "Лог банов и киков", value: "c:modlog", emoji: "🔨", description: "Модерация" },
+        { label: "Лог выхода", value: "c:leavelog", emoji: "👋", description: "Кто вышел + роли" },
+        { label: "Пинг при выходе", value: "r:leaveping", emoji: "📣", description: "Опционально" },
+      ],
+      placeholder: "Какой лог настроить?",
+    };
+  }
+  if (tab === "rooms") {
+    return {
+      title: "Комнаты",
+      body:
+        `Роли семьи: ${mentionRoles(cfg.familyRoleIds) || "—"}\n` +
+        `Войс «создать»: ${fmtCh(cfg.tempVoiceCreateChannelId)}\n` +
+        `Категория комнат: ${fmtCh(cfg.tempVoiceCategoryId)}\n` +
+        `${panelLine(cfg, "voice", "Панель управления")}\n\n` +
+        "Временные войсы для семьи Consume.",
+      options: [
+        { label: "Роли семьи", value: "r:family", emoji: "🏠", description: "Кто может создавать комнаты" },
+        { label: "Войс «создать комнату»", value: "c:tvcreate", emoji: "🔊", description: "Куда заходить" },
+        { label: "Категория комнат", value: "c:tvcat", emoji: "📁", description: "Где создавать войсы" },
+      ],
+      placeholder: "Что настроить в комнатах?",
     };
   }
   if (tab === "mods") {
@@ -307,9 +315,40 @@ function topicStatus(guild, tab, ui) {
       placeholder: "Кто модератор бота?",
     };
   }
+  if (tab === "protect") {
+    const on = cfg.antinukeEnabled !== false;
+    const users = (cfg.antinukeWhitelistUserIds || []).map((id) => `<@${id}>`).join(" ") || "—";
+    const bak = getChannelBackupMeta(guild.id);
+    const bakLine = bak?.savedAt
+      ? `есть · ${new Date(bak.savedAt).toLocaleString("ru-RU")} · ${bak.count} каналов`
+      : "нет";
+    return {
+      title: "Защита (антислив)",
+      body:
+        `Статус: **${on ? "ВКЛ" : "ВЫКЛ"}**\n` +
+        `Баны: **${cfg.antinukeBanLimit || 10}** / **${cfg.antinukeBanWindowSec || 60}** сек → снять роли\n` +
+        `Удаление каналов: **${cfg.antinukeChannelDeleteLimit || 8}** / **${cfg.antinukeChannelDeleteWindowSec || 60}** сек → снять роли\n` +
+        `Whitelist роли: ${mentionRoles(cfg.antinukeWhitelistRoleIds) || "—"}\n` +
+        `Whitelist люди: ${users}\n` +
+        `Бэкап каналов: **${bakLine}**\n\n` +
+        "Владелец сервера всегда в исключении. Бот должен быть выше ролей виновника.",
+      options: [
+        {
+          label: on ? "Выключить защиту" : "Включить защиту",
+          value: "t:antinuke",
+          emoji: on ? "🛑" : "✅",
+          description: on ? "Отключить антислив" : "Включить антислив",
+        },
+        { label: "Whitelist роли", value: "r:anrole", emoji: "🛡️", description: "Кому можно без лимита" },
+        { label: "Whitelist люди", value: "u:anuser", emoji: "👤", description: "Конкретные люди" },
+        { label: "Создать бэкап каналов", value: "t:chbak", emoji: "💾", description: "Сохранить структуру" },
+        { label: "Восстановить каналы", value: "t:chrestore", emoji: "♻️", description: "Вернуть из бэкапа" },
+      ],
+      placeholder: "Что настроить в защите?",
+    };
+  }
   if (tab === "summary" || tab === "home") {
     const roleOrEmpty = (ids) => (ids?.length ? mentionRoles(ids) : "—");
-    const oneRole = (id) => (id ? `<@&${id}>` : "—");
     return {
       title: "Сводка привязок",
       body:
@@ -322,7 +361,7 @@ function topicStatus(guild, tab, ui) {
         `Академия: ${roleOrEmpty(cfg.acceptRoleIdsAcademy)}\n` +
         `Основа: ${roleOrEmpty(cfg.acceptRoleIdsMain)}\n` +
         `Приём РП: ${statusLine(acc.rp)} · VZP: ${statusLine(acc.vzp)}\n\n` +
-        `**Автопарк**\n` +
+        `**Машины**\n` +
         `Менеджеры: ${roleOrEmpty(cfg.autoparkManagerRoleIds)}\n` +
         `Бронь: ${cfg.autoparkReserveMinutes || 60} мин\n\n` +
         `**Контракты**\n` +
@@ -330,24 +369,29 @@ function topicStatus(guild, tab, ui) {
         `Публикация: ${roleOrEmpty(cfg.kontraktPostRoleIds) || "модераторы"}\n` +
         `Пикнул/Отказ: ${roleOrEmpty(cfg.kontraktManagerRoleIds) || "модераторы"}\n` +
         `Пинг нового: ${roleOrEmpty(cfg.kontraktNewContractPingRoleIds)}\n\n` +
-        `**Тег в день**\n` +
-        `Роль: ${oneRole(cfg.dailyRolePingRoleId)}\n` +
-        `Канал: ${fmtCh(cfg.dailyRolePingChannelId)}\n` +
-        `Время: ${cfg.dailyRolePingTimes || `каждые ${cfg.dailyRolePingIntervalHours || 23} ч`}\n` +
-        `TZ: ${cfg.dailyRolePingTimezone || "Europe/Moscow"}\n\n` +
         `**Спам**\n` +
         `Кто может: ${roleOrEmpty(cfg.spamCommandRoleIds) || "Manage Server"}\n\n` +
-        `**ЛС при пинге**\n` +
-        `Кому: ${roleOrEmpty(cfg.roleMentionDmTargetRoleIds)}\n` +
-        `Каналы: ${mentionChannels(cfg.roleMentionDmChannelIds)}\n` +
-        `Категории: ${mentionChannels(cfg.roleMentionDmCategoryIds)}\n\n` +
         `**Логи**\n` +
-        `Канал: ${fmtCh(cfg.botActionLogChannelId)}\n\n` +
+        `Действия бота: ${fmtCh(cfg.botActionLogChannelId)}\n` +
+        `Баны/кики: ${fmtCh(cfg.modLogChannelId)}\n` +
+        `Выход: ${fmtCh(cfg.leaveLogChannelId)}\n` +
+        `Пинг выхода: ${cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : "—"}\n\n` +
+        `**Комнаты**\n` +
+        `Роли семьи: ${roleOrEmpty(cfg.familyRoleIds)}\n` +
+        `Создать комнату: ${fmtCh(cfg.tempVoiceCreateChannelId)}\n` +
+        `Категория: ${fmtCh(cfg.tempVoiceCategoryId)}\n\n` +
+        `**Защита**\n` +
+        `Статус: ${cfg.antinukeEnabled === false ? "ВЫКЛ" : "ВКЛ"}\n` +
+        `Баны: ${cfg.antinukeBanLimit || 10} / ${cfg.antinukeBanWindowSec || 60} сек\n` +
+        `Удал. каналов: ${cfg.antinukeChannelDeleteLimit || 8} / ${cfg.antinukeChannelDeleteWindowSec || 60} сек\n` +
+        `WL роли: ${roleOrEmpty(cfg.antinukeWhitelistRoleIds)}\n` +
+        `WL люди: ${(cfg.antinukeWhitelistUserIds || []).map((id) => `<@${id}>`).join(" ") || "—"}\n\n` +
         `**Панели (куда слали)**\n` +
         `${panelLine(cfg, "apps", "Заявки")}\n` +
         `${panelLine(cfg, "maps", "Карты")}\n` +
         `${panelLine(cfg, "kontrakt", "Контракты")}\n` +
-        `${panelLine(cfg, "autopark", "Автопарк")}\n` +
+        `${panelLine(cfg, "autopark", "Машины")}\n` +
+        `${panelLine(cfg, "voice", "Комнаты")}\n` +
         `${panelLine(cfg, "control", "Админка")}`,
       options: [{ label: "Обновить сводку", value: "t:refresh", emoji: "🔄", description: "Перечитать привязки" }],
       placeholder: "Обновить сводку",
@@ -385,31 +429,36 @@ const PICK_META = {
   "r:main": { kind: "role", selectId: "c:cfg:r:main", title: "Роли основы", max: 25, key: "acceptRoleIdsMain" },
   "r:apmgr": { kind: "role", selectId: "c:cfg:r:apmgr", title: "Автопарк", max: 25, key: "autoparkManagerRoleIds" },
   "r:spam": { kind: "role", selectId: "c:cfg:r:spam", title: "Кто может спамить", max: 25, key: "spamCommandRoleIds" },
-  "r:dmtgt": { kind: "role", selectId: "c:cfg:r:dmtgt", title: "Кому слать ЛС", max: 25, key: "roleMentionDmTargetRoleIds" },
-  "r:dping": { kind: "role", selectId: "c:cfg:r:dping", title: "Кого тегать раз в день", max: 1, key: "dailyRolePingRoleId", single: true },
   "r:kpost": { kind: "role", selectId: "c:cfg:r:kpost", title: "Кто публикует контракты", max: 25, key: "kontraktPostRoleIds" },
   "r:kmgr": { kind: "role", selectId: "c:cfg:r:kmgr", title: "Пикнул / Отказ", max: 25, key: "kontraktManagerRoleIds" },
   "r:kping": { kind: "role", selectId: "c:cfg:r:kping", title: "Пинг нового контракта", max: 25, key: "kontraktNewContractPingRoleIds" },
+  "r:family": { kind: "role", selectId: "c:cfg:r:family", title: "Роли семьи Consume", max: 25, key: "familyRoleIds" },
+  "r:leaveping": { kind: "role", selectId: "c:cfg:r:leaveping", title: "Пинг при выходе", max: 1, key: "leaveLogPingRoleId", single: true },
+  "r:anrole": { kind: "role", selectId: "c:cfg:r:anrole", title: "Whitelist роли (антислив)", max: 25, key: "antinukeWhitelistRoleIds" },
+  "u:anuser": { kind: "user", selectId: "c:cfg:u:anuser", title: "Whitelist люди (антислив)", max: 25, key: "antinukeWhitelistUserIds" },
   "c:tcat": { kind: "channel", selectId: "c:cfg:c:tcat", title: "Категория тикетов", types: [ChannelType.GuildCategory], max: 1, key: "ticketCategoryId", single: true },
   "c:log": { kind: "channel", selectId: "c:cfg:c:log", title: "Канал логов бота", types: TEXT_TYPES, max: 1, key: "botActionLogChannelId", single: true },
-  "c:kontr": { kind: "channel", selectId: "c:cfg:c:kontr", title: "Канал контрактов", types: [ChannelType.GuildText], max: 1, key: "kontraktChannelId", single: true },
-  "c:dping": { kind: "channel", selectId: "c:cfg:c:dping", title: "Куда слать тег в день", types: TEXT_TYPES, max: 1, key: "dailyRolePingChannelId", single: true },
-  "c:dmch": {
+  "c:modlog": { kind: "channel", selectId: "c:cfg:c:modlog", title: "Лог банов/киков", types: TEXT_TYPES, max: 1, key: "modLogChannelId", single: true },
+  "c:leavelog": { kind: "channel", selectId: "c:cfg:c:leavelog", title: "Лог выхода", types: TEXT_TYPES, max: 1, key: "leaveLogChannelId", single: true },
+  "c:tvcreate": {
     kind: "channel",
-    selectId: "c:cfg:c:dmch",
-    title: "Каналы слежения",
-    types: [ChannelType.GuildText, ChannelType.GuildVoice, ChannelType.GuildAnnouncement],
-    max: 25,
-    key: "roleMentionDmChannelIds",
+    selectId: "c:cfg:c:tvcreate",
+    title: "Войс «создать комнату»",
+    types: [ChannelType.GuildVoice],
+    max: 1,
+    key: "tempVoiceCreateChannelId",
+    single: true,
   },
-  "c:dmcat": {
+  "c:tvcat": {
     kind: "channel",
-    selectId: "c:cfg:c:dmcat",
-    title: "Категории слежения",
+    selectId: "c:cfg:c:tvcat",
+    title: "Категория временных комнат",
     types: [ChannelType.GuildCategory],
-    max: 25,
-    key: "roleMentionDmCategoryIds",
+    max: 1,
+    key: "tempVoiceCategoryId",
+    single: true,
   },
+  "c:kontr": { kind: "channel", selectId: "c:cfg:c:kontr", title: "Канал контрактов", types: [ChannelType.GuildText], max: 1, key: "kontraktChannelId", single: true },
 };
 
 const PANEL_LABELS = {
@@ -417,6 +466,7 @@ const PANEL_LABELS = {
   maps: "Карты VZP",
   kontr: "Контракты",
   ap: "Автопарк",
+  voice: "Комнаты",
   control: "Админка",
 };
 
@@ -471,7 +521,9 @@ function dropPickPayload(guild, tab, value) {
   const row =
     meta.kind === "role"
       ? roleSelect(guild, meta.selectId, meta.title, ids, meta.max)
-      : channelSelect(guild, meta.selectId, meta.title, meta.types, ids, meta.max);
+      : meta.kind === "user"
+        ? userSelect(meta.selectId, meta.title, ids, meta.max)
+        : channelSelect(guild, meta.selectId, meta.title, meta.types, ids, meta.max);
   return v2Message(meta.title, "Выбери ниже. Пустой выбор = сброс.", [row, back], { ephemeral: true });
 }
 
@@ -544,59 +596,6 @@ function rulesModal(cfg) {
     );
 }
 
-function pingModal(cfg) {
-  return new ModalBuilder()
-    .setCustomId("c:cfg:m:ping")
-    .setTitle("Тег раз в день")
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        maybeValue(
-          new TextInputBuilder()
-            .setCustomId("msg")
-            .setLabel("Текст сообщения")
-            .setStyle(TextInputStyle.Paragraph)
-            .setMaxLength(1000)
-            .setRequired(false),
-          cfg.dailyRolePingMessage,
-        ),
-      ),
-      new ActionRowBuilder().addComponents(
-        maybeValue(
-          new TextInputBuilder()
-            .setCustomId("times")
-            .setLabel("Времена ЧЧ:ММ через запятую")
-            .setPlaceholder("09:00, 21:30")
-            .setStyle(TextInputStyle.Short)
-            .setMaxLength(80)
-            .setRequired(false),
-          cfg.dailyRolePingTimes,
-        ),
-      ),
-      new ActionRowBuilder().addComponents(
-        maybeValue(
-          new TextInputBuilder()
-            .setCustomId("tz")
-            .setLabel("Часовой пояс")
-            .setStyle(TextInputStyle.Short)
-            .setMaxLength(60)
-            .setRequired(false),
-          cfg.dailyRolePingTimezone || "Europe/Moscow",
-        ),
-      ),
-      new ActionRowBuilder().addComponents(
-        maybeValue(
-          new TextInputBuilder()
-            .setCustomId("iv")
-            .setLabel("Интервал часов (если времена пустые)")
-            .setStyle(TextInputStyle.Short)
-            .setMaxLength(3)
-            .setRequired(false),
-          String(cfg.dailyRolePingIntervalHours || 23),
-        ),
-      ),
-    );
-}
-
 function apMinutesModal(cfg) {
   return new ModalBuilder()
     .setCustomId("c:cfg:m:ap")
@@ -659,17 +658,23 @@ const ROLE_PATCH = {
   "c:cfg:r:kpost": (v) => ({ kontraktPostRoleIds: v }),
   "c:cfg:r:kmgr": (v) => ({ kontraktManagerRoleIds: v }),
   "c:cfg:r:kping": (v) => ({ kontraktNewContractPingRoleIds: v }),
-  "c:cfg:r:dping": (v) => ({ dailyRolePingRoleId: v[0] || null }),
-  "c:cfg:r:dmtgt": (v) => ({ roleMentionDmTargetRoleIds: v }),
+  "c:cfg:r:family": (v) => ({ familyRoleIds: v }),
+  "c:cfg:r:leaveping": (v) => ({ leaveLogPingRoleId: v[0] || null }),
+  "c:cfg:r:anrole": (v) => ({ antinukeWhitelistRoleIds: v }),
+};
+
+const USER_PATCH = {
+  "c:cfg:u:anuser": (v) => ({ antinukeWhitelistUserIds: v }),
 };
 
 const CHANNEL_PATCH = {
   "c:cfg:c:tcat": (v) => ({ ticketCategoryId: v[0] || null }),
   "c:cfg:c:log": (v) => ({ botActionLogChannelId: v[0] || null }),
+  "c:cfg:c:modlog": (v) => ({ modLogChannelId: v[0] || null }),
+  "c:cfg:c:leavelog": (v) => ({ leaveLogChannelId: v[0] || null }),
+  "c:cfg:c:tvcreate": (v) => ({ tempVoiceCreateChannelId: v[0] || null }),
+  "c:cfg:c:tvcat": (v) => ({ tempVoiceCategoryId: v[0] || null }),
   "c:cfg:c:kontr": (v) => ({ kontraktChannelId: v[0] || null }),
-  "c:cfg:c:dping": (v) => ({ dailyRolePingChannelId: v[0] || null }),
-  "c:cfg:c:dmch": (v) => ({ roleMentionDmChannelIds: v }),
-  "c:cfg:c:dmcat": (v) => ({ roleMentionDmCategoryIds: v }),
 };
 
 const CFG_LABELS = {
@@ -683,14 +688,17 @@ const CFG_LABELS = {
   "c:cfg:r:kpost": "Публикация контрактов",
   "c:cfg:r:kmgr": "Пикнул / Отказ",
   "c:cfg:r:kping": "Пинг нового контракта",
-  "c:cfg:r:dping": "Роль тега в день",
-  "c:cfg:r:dmtgt": "Кому слать ЛС при пинге",
+  "c:cfg:r:family": "Роли семьи Consume",
+  "c:cfg:r:leaveping": "Пинг при выходе",
+  "c:cfg:r:anrole": "Whitelist роли антислив",
+  "c:cfg:u:anuser": "Whitelist люди антислив",
   "c:cfg:c:tcat": "Категория тикетов",
   "c:cfg:c:log": "Канал логов",
+  "c:cfg:c:modlog": "Лог банов/киков",
+  "c:cfg:c:leavelog": "Лог выхода",
+  "c:cfg:c:tvcreate": "Войс создать комнату",
+  "c:cfg:c:tvcat": "Категория комнат",
   "c:cfg:c:kontr": "Канал контрактов",
-  "c:cfg:c:dping": "Канал тега в день",
-  "c:cfg:c:dmch": "Каналы слежения ЛС",
-  "c:cfg:c:dmcat": "Категории слежения ЛС",
 };
 
 const MENU_LABELS = {
@@ -706,37 +714,44 @@ const MENU_LABELS = {
   "r:kmgr": "Пикнул / Отказ",
   "r:kping": "Пинг нового контракта",
   "t:rules": "Текст правил контрактов",
-  "r:dping": "Кого тегать",
-  "c:dping": "Куда слать тег",
-  "t:ping": "Текст и время тега",
   "r:spam": "Кто может спамить",
   "spam:to": "Запустить спам",
-  "r:dmtgt": "Кому слать ЛС",
-  "c:dmch": "Каналы слежения",
-  "c:dmcat": "Категории слежения",
   "c:log": "Канал логов",
   "r:mod": "Роли модераторов",
   "t:rpacc": "Вкл/выкл приём РП",
   "t:vzpacc": "Вкл/выкл приём VZP",
+  "r:family": "Роли семьи",
+  "c:tvcreate": "Войс создать комнату",
+  "c:tvcat": "Категория комнат",
+  "c:modlog": "Лог банов/киков",
+  "c:leavelog": "Лог выхода",
+  "r:leaveping": "Пинг при выходе",
+  "t:antinuke": "Вкл/выкл защиту",
+  "t:chbak": "Создать бэкап каналов",
+  "t:chrestore": "Восстановить каналы",
+  "r:anrole": "Whitelist роли",
+  "u:anuser": "Whitelist люди",
   "pub:apps": "Отправить панель заявок",
   "pub:maps": "Отправить панель карт",
   "pub:kontr": "Отправить панель контрактов",
   "pub:ap": "Отправить панель автопарка",
+  "pub:voice": "Отправить панель комнат",
   "pub:control": "Отправить админку",
 };
 
 const TAB_LABELS = {
-  panels: "Отправить панели",
+  panels: "Панели",
   apps: "Заявки",
-  cars: "Автопарк",
+  cars: "Машины",
   kontr: "Контракты",
-  daily: "Тег в день",
   spam: "Спам",
-  dm: "ЛС при пинге",
   logs: "Логи",
   mods: "Модераторы",
+  rooms: "Комнаты",
+  protect: "Защита",
   summary: "Сводка",
   home: "Сводка",
+  stats: "Статистика",
 };
 
 async function publishTo(interaction, kind, channel) {
@@ -786,6 +801,9 @@ async function publishTo(interaction, kind, channel) {
       });
       registerPanel(interaction.guild.id, ch.id, msg.id);
       rememberPanelChannel(interaction.guild.id, "autopark", ch.id);
+    } else if (kind === "voice") {
+      await ch.send(tempVoicePanelPayload());
+      rememberPanelChannel(interaction.guild.id, "voice", ch.id);
     } else if (kind === "control") {
       const payload = hubPayload(interaction.guild);
       const msg = await ch.send(payload);
@@ -819,10 +837,13 @@ export async function handleAdminInteraction(interaction) {
         roles: "apps",
         accept: "apps",
         channels: "logs",
-        texts: "daily",
+        texts: "summary",
         sbor: "mods",
+        daily: "summary",
+        dm: "summary",
+        family: "rooms",
       }[tabOpen[1]] || tabOpen[1];
-    if (["cars", "daily", "dm", "logs", "kontr", "mods"].includes(tab) && !(await canEditSettings(interaction))) {
+    if (["cars", "logs", "kontr", "mods", "rooms", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
     }
@@ -934,12 +955,56 @@ export async function handleAdminInteraction(interaction) {
       await interaction.showModal(rulesModal(getConfig(interaction.guildId)));
       return true;
     }
-    if (value === "t:ping") {
-      logAdminChange(interaction, "Админка: выбрал пункт", [
-        `Раздел: **${TAB_LABELS[tab] || tab}**`,
-        `Пункт: **${MENU_LABELS[value]}**`,
+    if (value === "t:antinuke") {
+      if (!(await canEditSettings(interaction))) {
+        await safeReply(interaction, "Защиту может менять только владелец или Manage Server.");
+        return true;
+      }
+      const before = getConfig(interaction.guildId);
+      const next = before.antinukeEnabled === false;
+      setConfig(interaction.guildId, { antinukeEnabled: next });
+      logAdminChange(interaction, "Админка: защита антислив", [
+        `Статус: **${before.antinukeEnabled === false ? "ВЫКЛ" : "ВКЛ"}** → **${next ? "ВКЛ" : "ВЫКЛ"}**`,
       ]).catch(() => null);
-      await interaction.showModal(pingModal(getConfig(interaction.guildId)));
+      await refreshTopic(interaction, "protect");
+      return true;
+    }
+    if (value === "t:chbak" || value === "t:chrestore") {
+      if (!(await canEditSettings(interaction))) {
+        await safeReply(interaction, "Бэкап каналов может делать только владелец или Manage Server.");
+        return true;
+      }
+      await interaction.deferUpdate();
+      try {
+        if (value === "t:chbak") {
+          const r = await createChannelBackup(interaction.guild);
+          logAdminChange(interaction, "Админка: бэкап каналов", [
+            `Сохранено каналов: **${r.count}**`,
+          ]).catch(() => null);
+          await interaction.followUp({
+            content: `Бэкап создан: **${r.count}** каналов/категорий.`,
+            ephemeral: true,
+          });
+        } else {
+          const r = await restoreChannelBackup(interaction.guild);
+          if (!r.ok) {
+            await interaction.followUp({ content: r.error || "Ошибка восстановления.", ephemeral: true });
+          } else {
+            logAdminChange(interaction, "Админка: восстановление каналов", [
+              `Создано: **${r.created}** · пропущено: **${r.skipped}** · всего в бэкапе: **${r.total}**`,
+            ]).catch(() => null);
+            const errHint = r.errors?.length ? `\nОшибки: ${r.errors.join("; ")}` : "";
+            await interaction.followUp({
+              content: `Восстановление: создано **${r.created}**, уже было **${r.skipped}**.${errHint}`,
+              ephemeral: true,
+            });
+          }
+        }
+      } catch (err) {
+        await interaction.followUp({ content: `Ошибка: ${String(err).slice(0, 200)}`, ephemeral: true }).catch(() => null);
+      }
+      const payload = topicPayload(interaction.guild, "protect", uiSet(interaction, { tab: "protect" }));
+      await interaction.editReply(payload).catch(() => null);
       return true;
     }
     if (value === "t:ap") {
@@ -950,7 +1015,7 @@ export async function handleAdminInteraction(interaction) {
       await interaction.showModal(apMinutesModal(getConfig(interaction.guildId)));
       return true;
     }
-    if (value.startsWith("r:") || value.startsWith("c:") || value === "spam:to") {
+    if (value.startsWith("r:") || value.startsWith("c:") || value.startsWith("u:") || value === "spam:to") {
       if (value !== "spam:to" && !(await canEditSettings(interaction))) {
         await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
         return true;
@@ -1010,6 +1075,24 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
 
+  if (interaction.isUserSelectMenu() && USER_PATCH[id]) {
+    const label = CFG_LABELS[id] || id;
+    const before = getConfig(interaction.guildId);
+    const patch = USER_PATCH[id](interaction.values);
+    setConfig(interaction.guildId, patch);
+    const key = Object.keys(patch)[0];
+    const oldVal = before[key] || [];
+    const newVal = patch[key] || [];
+    const fmt = (v) => (Array.isArray(v) && v.length ? v.map((x) => `<@${x}>`).join(" ") : "пусто");
+    logAdminChange(interaction, "Админка: изменил whitelist людей", [
+      `Параметр: **${label}**`,
+      `Было: ${fmt(oldVal)}`,
+      `Стало: ${fmt(newVal)}`,
+    ]).catch(() => null);
+    await refreshTopic(interaction, uiGet(interaction).tab || "protect");
+    return true;
+  }
+
   if (interaction.isChannelSelectMenu() && CHANNEL_PATCH[id]) {
     const label = CFG_LABELS[id] || id;
     const before = getConfig(interaction.guildId);
@@ -1043,26 +1126,6 @@ export async function handleAdminInteraction(interaction) {
       `Превью: ${text.slice(0, 120) || "пусто"}${text.length > 120 ? "…" : ""}`,
     ]).catch(() => null);
     await refreshTopic(interaction, "kontr");
-    return true;
-  }
-  if (interaction.isModalSubmit() && id === "c:cfg:m:ping") {
-    const iv = Number(interaction.fields.getTextInputValue("iv") || 23);
-    const msg = (interaction.fields.getTextInputValue("msg") || "").trim();
-    const times = (interaction.fields.getTextInputValue("times") || "").trim();
-    const tz = (interaction.fields.getTextInputValue("tz") || "Europe/Moscow").trim() || "Europe/Moscow";
-    setConfig(interaction.guildId, {
-      dailyRolePingMessage: msg,
-      dailyRolePingTimes: times,
-      dailyRolePingTimezone: tz,
-      dailyRolePingIntervalHours: Math.max(1, Math.min(168, Number.isFinite(iv) ? iv : 23)),
-    });
-    logAdminChange(interaction, "Админка: изменил тег в день", [
-      `Текст: ${msg.slice(0, 100) || "пусто"}${msg.length > 100 ? "…" : ""}`,
-      `Времена: ${times || "—"}`,
-      `Часовой пояс: ${tz}`,
-      `Интервал (ч): ${Math.max(1, Math.min(168, Number.isFinite(iv) ? iv : 23))}`,
-    ]).catch(() => null);
-    await refreshTopic(interaction, "daily");
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:ap") {

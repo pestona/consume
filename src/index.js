@@ -20,7 +20,10 @@ import { handleKontraktInteraction } from "./kontrakt.js";
 import { handleSborCommand, handleSborInteraction, restoreSborCountdowns } from "./sbor.js";
 import { handleAutoparkInteraction, autoparkExpireLoop } from "./autopark.js";
 import { handleSpamInteraction } from "./spam.js";
-import { dailyRolePingLoop, logBotAction, onGuildMessage, startHealthServerIfNeeded } from "./schedulers.js";
+import { handleTempVoiceInteraction, onTempVoiceState } from "./tempVoice.js";
+import { onMemberRemove } from "./modLogs.js";
+import { onAntinukeChannelDelete } from "./antinuke.js";
+import { logBotAction, startHealthServerIfNeeded } from "./schedulers.js";
 import { isStale, logJson, safeReply } from "./util.js";
 
 const token = (process.env.DISCORD_TOKEN || "").trim().replace(/^['"]|['"]$/g, "");
@@ -110,13 +113,11 @@ client.once(Events.ClientReady, async (readyClient) => {
   await syncCommands(readyClient);
   restoreSborCountdowns(readyClient);
   autoparkExpireLoop(readyClient).catch((err) => logJson("ERROR", "autopark loop", { error: String(err) }));
-  dailyRolePingLoop(readyClient).catch((err) => logJson("ERROR", "daily ping loop", { error: String(err) }));
   logJson("INFO", `Бот запущен: ${readyClient.user.tag} (${readyClient.user.id})`);
 });
 
 client.on(Events.MessageCreate, (message) => {
   trackMessageActivity(message);
-  onGuildMessage(message).catch((err) => logJson("ERROR", "on message", { error: String(err) }));
 });
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -125,6 +126,19 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   } catch (err) {
     logJson("ERROR", "voice activity", { error: String(err) });
   }
+  onTempVoiceState(oldState, newState).catch((err) =>
+    logJson("ERROR", "temp voice", { error: String(err) }),
+  );
+});
+
+client.on(Events.GuildMemberRemove, (member) => {
+  onMemberRemove(member).catch((err) => logJson("ERROR", "leave log", { error: String(err) }));
+});
+
+client.on(Events.ChannelDelete, (channel) => {
+  onAntinukeChannelDelete(channel).catch((err) =>
+    logJson("ERROR", "antinuke channel", { error: String(err) }),
+  );
 });
 
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
@@ -150,6 +164,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     const handlers = [
+      handleTempVoiceInteraction,
       handleActivityAdmin,
       handleAdminInteraction,
       handleTicketInteraction,
