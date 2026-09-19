@@ -1,9 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -27,16 +23,7 @@ import {
   withLock,
 } from "./util.js";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const THREAD_NAMES = ["Рп мероприятия", "Капт/мцл", "Арена"];
-
-function archiveBannerPath() {
-  for (const name of ["archive.png", "panel.png", "banner.png"]) {
-    const p = path.join(ROOT, name);
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
-}
 
 function state() {
   const data = kvGet("archiveRooms") || {};
@@ -128,15 +115,7 @@ export function archiveCreateButton() {
 }
 
 export function buildArchivePublicPanel() {
-  const emb = publicCreateEmbed();
-  const files = [];
-  const banner = archiveBannerPath();
-  if (banner) {
-    const name = path.basename(banner);
-    files.push(new AttachmentBuilder(banner, { name }));
-    emb.setImage(`attachment://${name}`);
-  }
-  return { embeds: [emb], components: [archiveCreateButton()], files };
+  return { embeds: [publicCreateEmbed()], components: [archiveCreateButton()] };
 }
 
 function roomEmbed(member, room, cfg) {

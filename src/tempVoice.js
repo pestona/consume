@@ -95,7 +95,8 @@ export function tempVoicePanelPayload() {
     `👥 = Установить количество слотов в комнате\n` +
     `👑 = Передать право владения комнатой\n` +
     `📝 = Сменить название вашей комнаты\n` +
-    `🔓 = Выдать/забрать доступ пользователю в вашу комнату\n\n` +
+    `🔓 = Выдать/забрать доступ пользователю в вашу комнату\n` +
+    `📣 = Все ко мне — собрать людей из видимых войсов (не трогает AFK и скрытые)\n\n` +
     `😤 Создание временных комнат — только для участников семьи **Consume**!`;
 
   const container = new ContainerBuilder()
@@ -116,8 +117,15 @@ export function tempVoicePanelPayload() {
     new ButtonBuilder().setCustomId("c:tv:rename").setEmoji("📝").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("c:tv:access").setEmoji("🔓").setStyle(ButtonStyle.Secondary),
   );
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("c:tv:gather")
+      .setEmoji("📣")
+      .setLabel("Все ко мне")
+      .setStyle(ButtonStyle.Primary),
+  );
 
-  container.addActionRowComponents(row1, row2);
+  container.addActionRowComponents(row1, row2, row3);
   return { components: [container], flags: V2 };
 }
 
@@ -153,11 +161,76 @@ function userPickRow(customId, placeholder) {
   );
 }
 
+function isHiddenOrAfkVoice(channel, guild, cfg) {
+  if (!channel) return true;
+  if (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice) return true;
+  if (guild.afkChannelId && String(channel.id) === String(guild.afkChannelId)) return true;
+  if (cfg.tempVoiceCreateChannelId && String(channel.id) === String(cfg.tempVoiceCreateChannelId)) return true;
+  const everyoneView = channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel);
+  if (!everyoneView) return true;
+  return false;
+}
+
+async function gatherToOwnerRoom(interaction, found) {
+  const guild = interaction.guild;
+  const cfg = getConfig(guild.id);
+  const dest = found.channel;
+  const targets = [];
+
+  for (const ch of guild.channels.cache.values()) {
+    if (String(ch.id) === String(dest.id)) continue;
+    if (isHiddenOrAfkVoice(ch, guild, cfg)) continue;
+    if (!ch.isVoiceBased?.() && ch.type !== ChannelType.GuildVoice && ch.type !== ChannelType.GuildStageVoice) continue;
+    for (const m of ch.members.values()) {
+      if (m.user.bot) continue;
+      if (String(m.id) === String(interaction.user.id)) continue;
+      targets.push(m);
+    }
+  }
+
+  if (!targets.length) {
+    await interaction.reply(eph("Некого перемещать — в видимых войсах никого нет."));
+    return;
+  }
+
+  const need = (dest.members?.size || 0) + targets.length;
+  const lim = dest.userLimit || 0;
+  if (lim > 0 && need > lim) {
+    await dest.setUserLimit(0).catch(() => null);
+  }
+
+  await interaction.deferReply({ ephemeral: true }).catch(() => null);
+
+  let moved = 0;
+  let failed = 0;
+  for (const m of targets) {
+    try {
+      await m.voice.setChannel(dest, "Consume: все ко мне");
+      moved += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  const text =
+    failed > 0
+      ? `Переместил **${moved}**, не удалось: **${failed}**.`
+      : `Переместил к тебе: **${moved}**.`;
+  await interaction.editReply({ content: text }).catch(() => null);
+}
+
 export async function handleTempVoiceInteraction(interaction) {
   const id = interaction.customId || "";
   if (!id.startsWith("c:tv:")) return false;
   if (!interaction.guild) {
     await safeReply(interaction, "Только на сервере.");
+    return true;
+  }
+
+  if (interaction.isButton() && id === "c:tv:gather") {
+    const found = await requireOwnedRoom(interaction);
+    if (!found) return true;
+    await gatherToOwnerRoom(interaction, found);
     return true;
   }
 
