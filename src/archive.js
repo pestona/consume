@@ -4,7 +4,6 @@ import {
   ButtonStyle,
   ChannelType,
   EmbedBuilder,
-  PermissionFlagsBits,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } from "discord.js";
@@ -218,58 +217,37 @@ async function createArchiveRoom(interaction) {
       return;
     }
 
-    const overwrites = [
-      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-      {
-        id: member.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.AttachFiles,
-          PermissionFlagsBits.EmbedLinks,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.CreatePublicThreads,
-          PermissionFlagsBits.SendMessagesInThreads,
-        ],
-      },
-      {
-        id: guild.members.me.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ManageChannels,
-          PermissionFlagsBits.ManageMessages,
-          PermissionFlagsBits.ManageThreads,
-        ],
-      },
-    ];
-
-    const modRoles = cfg.archiveModRoleIds?.length
-      ? cfg.archiveModRoleIds
-      : cfg.ticketStaffRoleIds?.length
-        ? cfg.ticketStaffRoleIds
-        : cfg.moderatorRoleIds || [];
-    for (const rid of modRoles) {
-      overwrites.push({
-        id: rid,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.ManageMessages,
-          PermissionFlagsBits.AttachFiles,
-        ],
-      });
-    }
-
     const channel = await guild.channels.create({
       name: channelSlug(member.displayName, member.id.slice(-4), "arch"),
       type: ChannelType.GuildText,
       parent: cfg.archiveCategoryId,
-      permissionOverwrites: overwrites,
       topic: `Архив · ${member.user.tag} · ${member.id}`,
       reason: `Consume архив для ${member.id}`,
     });
+
+    // Права как у категории, сверху — доступ создателя (и бота).
+    await channel.permissionOverwrites
+      .edit(member.id, {
+        ViewChannel: true,
+        SendMessages: true,
+        AttachFiles: true,
+        EmbedLinks: true,
+        ReadMessageHistory: true,
+        CreatePublicThreads: true,
+        SendMessagesInThreads: true,
+      })
+      .catch(() => null);
+    if (guild.members.me) {
+      await channel.permissionOverwrites
+        .edit(guild.members.me.id, {
+          ViewChannel: true,
+          SendMessages: true,
+          ManageChannels: true,
+          ManageMessages: true,
+          ManageThreads: true,
+        })
+        .catch(() => null);
+    }
 
     const room = {
       guildId: String(guild.id),

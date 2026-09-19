@@ -486,32 +486,28 @@ async function createTempRoom(state) {
         parent: parent.id,
         userLimit: 5,
         reason: `Временная комната Consume · ${member.id}`,
-        permissionOverwrites: [
-          {
-            id: guild.id,
-            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect],
-          },
-          {
-            id: member.id,
-            allow: [
-              PermissionFlagsBits.ViewChannel,
-              PermissionFlagsBits.Connect,
-              PermissionFlagsBits.Speak,
-              PermissionFlagsBits.ManageChannels,
-              PermissionFlagsBits.MoveMembers,
-            ],
-          },
-          {
-            id: guild.members.me.id,
-            allow: [
-              PermissionFlagsBits.ViewChannel,
-              PermissionFlagsBits.Connect,
-              PermissionFlagsBits.ManageChannels,
-              PermissionFlagsBits.MoveMembers,
-            ],
-          },
-        ],
       });
+
+      // Права как у категории, сверху — владелец комнаты (и бот).
+      await channel.permissionOverwrites
+        .edit(member.id, {
+          ViewChannel: true,
+          Connect: true,
+          Speak: true,
+          ManageChannels: true,
+          MoveMembers: true,
+        })
+        .catch(() => null);
+      if (guild.members.me) {
+        await channel.permissionOverwrites
+          .edit(guild.members.me.id, {
+            ViewChannel: true,
+            Connect: true,
+            ManageChannels: true,
+            MoveMembers: true,
+          })
+          .catch(() => null);
+      }
 
       setRoom(channel.id, {
         guildId: String(guild.id),
