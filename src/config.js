@@ -15,6 +15,8 @@ export function defaultConfig() {
     modLogChannelId: null,
     leaveLogChannelId: null,
     leaveLogPingRoleId: null,
+    leaveLogTrackRoleIds: [],
+    leaveLogIncludeNoRoles: true,
     familyRoleIds: [],
     tempVoiceCreateChannelId: null,
     tempVoiceCategoryId: null,
@@ -33,6 +35,14 @@ export function defaultConfig() {
     antinukeChannelDeleteWindowSec: 60,
     antinukeWhitelistRoleIds: [],
     antinukeWhitelistUserIds: [],
+    archiveCategoryId: null,
+    archiveModRoleIds: [],
+    archiveTier1RoleId: null,
+    archiveTier2RoleId: null,
+    archiveTier3RoleId: null,
+    archiveRankLowRoleId: null,
+    archiveRankHighRoleId: null,
+    archiveRankChainRoleIds: [],
     publishChannelId: null,
     controlMessageId: null,
     panelChannels: {
@@ -42,6 +52,7 @@ export function defaultConfig() {
       kontrakt: null,
       autopark: null,
       voice: null,
+      archive: null,
     },
   };
 }

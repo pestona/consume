@@ -21,6 +21,7 @@ import { handleSborCommand, handleSborInteraction, restoreSborCountdowns } from 
 import { handleAutoparkInteraction, autoparkExpireLoop } from "./autopark.js";
 import { handleSpamInteraction } from "./spam.js";
 import { handleTempVoiceInteraction, onTempVoiceState } from "./tempVoice.js";
+import { handleArchiveInteraction } from "./archive.js";
 import { onMemberRemove } from "./modLogs.js";
 import { onAntinukeChannelDelete } from "./antinuke.js";
 import { logBotAction, startHealthServerIfNeeded } from "./schedulers.js";
@@ -165,6 +166,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const handlers = [
       handleTempVoiceInteraction,
+      handleArchiveInteraction,
       handleActivityAdmin,
       handleAdminInteraction,
       handleTicketInteraction,

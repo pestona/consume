@@ -120,6 +120,21 @@ function roleList(member) {
   return text.length > 900 ? `${text.slice(0, 900)}…` : text;
 }
 
+function memberRoleIds(member) {
+  return [...(member.roles?.cache?.keys?.() || [])].map(String).filter((id) => id !== String(member.guild.id));
+}
+
+/** Лог выхода: только отслеживаемые роли ИЛИ человек без ролей. */
+function shouldLogLeave(member, cfg) {
+  const ids = memberRoleIds(member);
+  const includeNoRoles = cfg.leaveLogIncludeNoRoles !== false;
+  if (!ids.length) return includeNoRoles;
+
+  const tracked = (cfg.leaveLogTrackRoleIds || []).map(String);
+  if (!tracked.length) return false;
+  return ids.some((id) => tracked.includes(id));
+}
+
 export async function onMemberRemove(member) {
   try {
     if (member.partial) {
@@ -212,6 +227,15 @@ export async function onMemberRemove(member) {
     logJson("WARN", "выход без канала лога — задай Логи → Выход", { guildId: guild.id });
     return;
   }
+  if (!shouldLogLeave(member, cfg)) {
+    logJson("INFO", "leave skip (роли не в отслеживаемых)", {
+      guildId: guild.id,
+      userId: user.id,
+      roles: memberRoleIds(member),
+    });
+    return;
+  }
+  const rolesText = roleList(member);
   const ping = leaveCh && cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : null;
   await sendEmbed(
     guild,
@@ -220,7 +244,7 @@ export async function onMemberRemove(member) {
       color: COLOR_DARK,
       title: `Пользователь покинул ${name}`,
       description: `Пользователь покинул сервер. <@${user.id}>`,
-      fields: [{ name: "Роли пользователя", value: roleList(member), inline: false }],
+      fields: [{ name: "Роли пользователя", value: rolesText, inline: false }],
       thumb,
     }),
     ping,

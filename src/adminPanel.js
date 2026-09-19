@@ -30,6 +30,7 @@ import {
 } from "./kontrakt.js";
 import { buildAutoparkEmbed, autoparkPanelRows, registerPanel } from "./autopark.js";
 import { tempVoicePanelPayload } from "./tempVoice.js";
+import { buildArchivePublicPanel } from "./archive.js";
 import { createChannelBackup, getChannelBackupMeta, restoreChannelBackup } from "./channelBackup.js";
 import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
 import { logAdminChange } from "./schedulers.js";
@@ -150,7 +151,7 @@ function hubPayload(guild) {
     `Выбери раздел — у каждого своя настройка.\n\n` +
     `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
     `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
-    `${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
+    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
     `Сборы: команда **/сбор**`;
 
   return v2Message("Админка Consume", body, [
@@ -165,10 +166,11 @@ function hubPayload(guild) {
       btn("c:adm:tab:logs", "Логи", "📋"),
       btn("c:adm:tab:mods", "Модераторы", "🛡️"),
       btn("c:adm:tab:rooms", "Комнаты", "🔊"),
+      btn("c:adm:tab:archive", "Архив", "📁"),
       btn("c:adm:tab:protect", "Защита", "🚨", ButtonStyle.Danger),
-      btn("c:adm:tab:summary", "Сводка", "📊"),
     ),
     new ActionRowBuilder().addComponents(
+      btn("c:adm:tab:summary", "Сводка", "📊"),
       btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
     ),
   ]);
@@ -187,6 +189,7 @@ function topicStatus(guild, tab, ui) {
         `${panelLine(cfg, "kontrakt", "Контракты")}\n` +
         `${panelLine(cfg, "autopark", "Машины")}\n` +
         `${panelLine(cfg, "voice", "Комнаты")}\n` +
+        `${panelLine(cfg, "archive", "Архив")}\n` +
         `${panelLine(cfg, "control", "Админка")}\n\n` +
         "Сначала панель — потом канал только для неё.",
       options: [
@@ -195,6 +198,7 @@ function topicStatus(guild, tab, ui) {
         { label: "Панель контрактов", value: "pub:kontr", emoji: "📜", description: "Куда отправить" },
         { label: "Панель автопарка", value: "pub:ap", emoji: "🚗", description: "Куда отправить" },
         { label: "Панель комнат", value: "pub:voice", emoji: "🔊", description: "Управление войсами" },
+        { label: "Панель архива", value: "pub:archive", emoji: "📁", description: "Создание каналов" },
         { label: "Эту админку", value: "pub:control", emoji: "📋", description: "Куда отправить" },
       ],
       placeholder: "Какую панель отправить?",
@@ -277,13 +281,22 @@ function topicStatus(guild, tab, ui) {
         `Действия бота: ${fmtCh(cfg.botActionLogChannelId)}\n` +
         `Баны / кики: ${fmtCh(cfg.modLogChannelId)}\n` +
         `Выход с сервера: ${fmtCh(cfg.leaveLogChannelId)}\n` +
-        `Пинг при выходе: ${cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : "—"}\n\n` +
+        `Пинг при выходе: ${cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : "—"}\n` +
+        `Отслеживаемые роли выхода: ${mentionRoles(cfg.leaveLogTrackRoleIds) || "—"}\n` +
+        `Выход без ролей: **${cfg.leaveLogIncludeNoRoles === false ? "нет" : "да"}**\n\n` +
         "Каналы логов по типу событий.",
       options: [
         { label: "Лог действий бота", value: "c:log", emoji: "📋", description: "Админка / команды" },
         { label: "Лог банов и киков", value: "c:modlog", emoji: "🔨", description: "Модерация" },
         { label: "Лог выхода", value: "c:leavelog", emoji: "👋", description: "Кто вышел + роли" },
         { label: "Пинг при выходе", value: "r:leaveping", emoji: "📣", description: "Опционально" },
+        { label: "Роли для лога выхода", value: "r:leavetrack", emoji: "👀", description: "Только эти роли" },
+        {
+          label: cfg.leaveLogIncludeNoRoles === false ? "Вкл: выход без ролей" : "Выкл: выход без ролей",
+          value: "t:leavenoroles",
+          emoji: "👤",
+          description: "Писать лив без ролей",
+        },
       ],
       placeholder: "Какой лог настроить?",
     };
@@ -303,6 +316,36 @@ function topicStatus(guild, tab, ui) {
         { label: "Категория комнат", value: "c:tvcat", emoji: "📁", description: "Где создавать войсы" },
       ],
       placeholder: "Что настроить в комнатах?",
+    };
+  }
+  if (tab === "archive") {
+    const modsLabel = cfg.archiveModRoleIds?.length
+      ? mentionRoles(cfg.archiveModRoleIds)
+      : "как у тикетов";
+    return {
+      title: "Настройка архива",
+      body:
+        `Выбери пункт ниже и укажи роль / категорию.\n\n` +
+        `**Категория:** ${cfg.archiveCategoryId ? fmtCh(cfg.archiveCategoryId) : "❌ не задана"}\n` +
+        `**Модераторы:** ${modsLabel}\n` +
+        `**Тир 1:** ${cfg.archiveTier1RoleId ? `<@&${cfg.archiveTier1RoleId}>` : "❌ не задана"}\n` +
+        `**Тир 2:** ${cfg.archiveTier2RoleId ? `<@&${cfg.archiveTier2RoleId}>` : "❌ не задана"}\n` +
+        `**Тир 3:** ${cfg.archiveTier3RoleId ? `<@&${cfg.archiveTier3RoleId}>` : "❌ не задана"}\n` +
+        `**Низкий ранг:** ${cfg.archiveRankLowRoleId ? `<@&${cfg.archiveRankLowRoleId}>` : "❌ не задана"}\n` +
+        `**Высокий ранг:** ${cfg.archiveRankHighRoleId ? `<@&${cfg.archiveRankHighRoleId}>` : "❌ не задана"}\n` +
+        `**Цепочка рангов:** ${cfg.archiveRankChainRoleIds?.length ? mentionRoles(cfg.archiveRankChainRoleIds) : "❌ не задана"}\n\n` +
+        `${panelLine(cfg, "archive", "Панель создания")}`,
+      options: [
+        { label: "Категория", value: "c:archcat", emoji: "📁", description: "Где создавать каналы" },
+        { label: "Модераторы", value: "r:archmod", emoji: "🛡️", description: "Пусто = как у тикетов" },
+        { label: "Тир 1", value: "r:archt1", emoji: "🥇", description: "Роль тира 1" },
+        { label: "Тир 2", value: "r:archt2", emoji: "🥈", description: "Роль тира 2" },
+        { label: "Тир 3", value: "r:archt3", emoji: "🥉", description: "Роль тира 3" },
+        { label: "Низкий ранг", value: "r:archlow", emoji: "↘️", description: "Начало цепочки" },
+        { label: "Высокий ранг", value: "r:archhigh", emoji: "↗️", description: "Конец цепочки" },
+        { label: "Цепочка рангов", value: "r:archchain", emoji: "🔗", description: "Порядок от низкого к высокому" },
+      ],
+      placeholder: "Выбрать что настроить",
     };
   }
   if (tab === "mods") {
@@ -375,11 +418,18 @@ function topicStatus(guild, tab, ui) {
         `Действия бота: ${fmtCh(cfg.botActionLogChannelId)}\n` +
         `Баны/кики: ${fmtCh(cfg.modLogChannelId)}\n` +
         `Выход: ${fmtCh(cfg.leaveLogChannelId)}\n` +
-        `Пинг выхода: ${cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : "—"}\n\n` +
+        `Пинг выхода: ${cfg.leaveLogPingRoleId ? `<@&${cfg.leaveLogPingRoleId}>` : "—"}\n` +
+        `Роли выхода: ${roleOrEmpty(cfg.leaveLogTrackRoleIds)}\n` +
+        `Без ролей: ${cfg.leaveLogIncludeNoRoles === false ? "нет" : "да"}\n\n` +
         `**Комнаты**\n` +
         `Роли семьи: ${roleOrEmpty(cfg.familyRoleIds)}\n` +
         `Создать комнату: ${fmtCh(cfg.tempVoiceCreateChannelId)}\n` +
         `Категория: ${fmtCh(cfg.tempVoiceCategoryId)}\n\n` +
+        `**Архив**\n` +
+        `Категория: ${fmtCh(cfg.archiveCategoryId)}\n` +
+        `Модераторы: ${roleOrEmpty(cfg.archiveModRoleIds) || "как у тикетов"}\n` +
+        `Тиры: ${[cfg.archiveTier1RoleId, cfg.archiveTier2RoleId, cfg.archiveTier3RoleId].filter(Boolean).map((id) => `<@&${id}>`).join(" ") || "—"}\n` +
+        `Ранги: ${cfg.archiveRankChainRoleIds?.length ? roleOrEmpty(cfg.archiveRankChainRoleIds) : [cfg.archiveRankLowRoleId, cfg.archiveRankHighRoleId].filter(Boolean).map((id) => `<@&${id}>`).join(" ") || "—"}\n\n` +
         `**Защита**\n` +
         `Статус: ${cfg.antinukeEnabled === false ? "ВЫКЛ" : "ВКЛ"}\n` +
         `Баны: ${cfg.antinukeBanLimit || 10} / ${cfg.antinukeBanWindowSec || 60} сек\n` +
@@ -392,6 +442,7 @@ function topicStatus(guild, tab, ui) {
         `${panelLine(cfg, "kontrakt", "Контракты")}\n` +
         `${panelLine(cfg, "autopark", "Машины")}\n` +
         `${panelLine(cfg, "voice", "Комнаты")}\n` +
+        `${panelLine(cfg, "archive", "Архив")}\n` +
         `${panelLine(cfg, "control", "Админка")}`,
       options: [{ label: "Обновить сводку", value: "t:refresh", emoji: "🔄", description: "Перечитать привязки" }],
       placeholder: "Обновить сводку",
@@ -434,6 +485,7 @@ const PICK_META = {
   "r:kping": { kind: "role", selectId: "c:cfg:r:kping", title: "Пинг нового контракта", max: 25, key: "kontraktNewContractPingRoleIds" },
   "r:family": { kind: "role", selectId: "c:cfg:r:family", title: "Роли семьи Consume", max: 25, key: "familyRoleIds" },
   "r:leaveping": { kind: "role", selectId: "c:cfg:r:leaveping", title: "Пинг при выходе", max: 1, key: "leaveLogPingRoleId", single: true },
+  "r:leavetrack": { kind: "role", selectId: "c:cfg:r:leavetrack", title: "Роли для лога выхода", max: 25, key: "leaveLogTrackRoleIds" },
   "r:anrole": { kind: "role", selectId: "c:cfg:r:anrole", title: "Whitelist роли (антислив)", max: 25, key: "antinukeWhitelistRoleIds" },
   "u:anuser": { kind: "user", selectId: "c:cfg:u:anuser", title: "Whitelist люди (антислив)", max: 25, key: "antinukeWhitelistUserIds" },
   "c:tcat": { kind: "channel", selectId: "c:cfg:c:tcat", title: "Категория тикетов", types: [ChannelType.GuildCategory], max: 1, key: "ticketCategoryId", single: true },
@@ -459,6 +511,22 @@ const PICK_META = {
     single: true,
   },
   "c:kontr": { kind: "channel", selectId: "c:cfg:c:kontr", title: "Канал контрактов", types: [ChannelType.GuildText], max: 1, key: "kontraktChannelId", single: true },
+  "c:archcat": {
+    kind: "channel",
+    selectId: "c:cfg:c:archcat",
+    title: "Категория архива",
+    types: [ChannelType.GuildCategory],
+    max: 1,
+    key: "archiveCategoryId",
+    single: true,
+  },
+  "r:archmod": { kind: "role", selectId: "c:cfg:r:archmod", title: "Модераторы архива", max: 25, key: "archiveModRoleIds" },
+  "r:archt1": { kind: "role", selectId: "c:cfg:r:archt1", title: "Тир 1", max: 1, key: "archiveTier1RoleId", single: true },
+  "r:archt2": { kind: "role", selectId: "c:cfg:r:archt2", title: "Тир 2", max: 1, key: "archiveTier2RoleId", single: true },
+  "r:archt3": { kind: "role", selectId: "c:cfg:r:archt3", title: "Тир 3", max: 1, key: "archiveTier3RoleId", single: true },
+  "r:archlow": { kind: "role", selectId: "c:cfg:r:archlow", title: "Низкий ранг", max: 1, key: "archiveRankLowRoleId", single: true },
+  "r:archhigh": { kind: "role", selectId: "c:cfg:r:archhigh", title: "Высокий ранг", max: 1, key: "archiveRankHighRoleId", single: true },
+  "r:archchain": { kind: "role", selectId: "c:cfg:r:archchain", title: "Цепочка рангов (низ → верх)", max: 25, key: "archiveRankChainRoleIds" },
 };
 
 const PANEL_LABELS = {
@@ -467,6 +535,7 @@ const PANEL_LABELS = {
   kontr: "Контракты",
   ap: "Автопарк",
   voice: "Комнаты",
+  archive: "Архив",
   control: "Админка",
 };
 
@@ -660,7 +729,15 @@ const ROLE_PATCH = {
   "c:cfg:r:kping": (v) => ({ kontraktNewContractPingRoleIds: v }),
   "c:cfg:r:family": (v) => ({ familyRoleIds: v }),
   "c:cfg:r:leaveping": (v) => ({ leaveLogPingRoleId: v[0] || null }),
+  "c:cfg:r:leavetrack": (v) => ({ leaveLogTrackRoleIds: v }),
   "c:cfg:r:anrole": (v) => ({ antinukeWhitelistRoleIds: v }),
+  "c:cfg:r:archmod": (v) => ({ archiveModRoleIds: v }),
+  "c:cfg:r:archt1": (v) => ({ archiveTier1RoleId: v[0] || null }),
+  "c:cfg:r:archt2": (v) => ({ archiveTier2RoleId: v[0] || null }),
+  "c:cfg:r:archt3": (v) => ({ archiveTier3RoleId: v[0] || null }),
+  "c:cfg:r:archlow": (v) => ({ archiveRankLowRoleId: v[0] || null }),
+  "c:cfg:r:archhigh": (v) => ({ archiveRankHighRoleId: v[0] || null }),
+  "c:cfg:r:archchain": (v) => ({ archiveRankChainRoleIds: v }),
 };
 
 const USER_PATCH = {
@@ -675,6 +752,7 @@ const CHANNEL_PATCH = {
   "c:cfg:c:tvcreate": (v) => ({ tempVoiceCreateChannelId: v[0] || null }),
   "c:cfg:c:tvcat": (v) => ({ tempVoiceCategoryId: v[0] || null }),
   "c:cfg:c:kontr": (v) => ({ kontraktChannelId: v[0] || null }),
+  "c:cfg:c:archcat": (v) => ({ archiveCategoryId: v[0] || null }),
 };
 
 const CFG_LABELS = {
@@ -690,6 +768,7 @@ const CFG_LABELS = {
   "c:cfg:r:kping": "Пинг нового контракта",
   "c:cfg:r:family": "Роли семьи Consume",
   "c:cfg:r:leaveping": "Пинг при выходе",
+  "c:cfg:r:leavetrack": "Роли для лога выхода",
   "c:cfg:r:anrole": "Whitelist роли антислив",
   "c:cfg:u:anuser": "Whitelist люди антислив",
   "c:cfg:c:tcat": "Категория тикетов",
@@ -699,6 +778,14 @@ const CFG_LABELS = {
   "c:cfg:c:tvcreate": "Войс создать комнату",
   "c:cfg:c:tvcat": "Категория комнат",
   "c:cfg:c:kontr": "Канал контрактов",
+  "c:cfg:c:archcat": "Категория архива",
+  "c:cfg:r:archmod": "Модераторы архива",
+  "c:cfg:r:archt1": "Тир 1",
+  "c:cfg:r:archt2": "Тир 2",
+  "c:cfg:r:archt3": "Тир 3",
+  "c:cfg:r:archlow": "Низкий ранг",
+  "c:cfg:r:archhigh": "Высокий ранг",
+  "c:cfg:r:archchain": "Цепочка рангов",
 };
 
 const MENU_LABELS = {
@@ -726,6 +813,8 @@ const MENU_LABELS = {
   "c:modlog": "Лог банов/киков",
   "c:leavelog": "Лог выхода",
   "r:leaveping": "Пинг при выходе",
+  "r:leavetrack": "Роли для лога выхода",
+  "t:leavenoroles": "Выход без ролей",
   "t:antinuke": "Вкл/выкл защиту",
   "t:chbak": "Создать бэкап каналов",
   "t:chrestore": "Восстановить каналы",
@@ -736,7 +825,16 @@ const MENU_LABELS = {
   "pub:kontr": "Отправить панель контрактов",
   "pub:ap": "Отправить панель автопарка",
   "pub:voice": "Отправить панель комнат",
+  "pub:archive": "Отправить панель архива",
   "pub:control": "Отправить админку",
+  "c:archcat": "Категория архива",
+  "r:archmod": "Модераторы архива",
+  "r:archt1": "Тир 1",
+  "r:archt2": "Тир 2",
+  "r:archt3": "Тир 3",
+  "r:archlow": "Низкий ранг",
+  "r:archhigh": "Высокий ранг",
+  "r:archchain": "Цепочка рангов",
 };
 
 const TAB_LABELS = {
@@ -748,6 +846,7 @@ const TAB_LABELS = {
   logs: "Логи",
   mods: "Модераторы",
   rooms: "Комнаты",
+  archive: "Архив",
   protect: "Защита",
   summary: "Сводка",
   home: "Сводка",
@@ -804,6 +903,9 @@ async function publishTo(interaction, kind, channel) {
     } else if (kind === "voice") {
       await ch.send(tempVoicePanelPayload());
       rememberPanelChannel(interaction.guild.id, "voice", ch.id);
+    } else if (kind === "archive") {
+      await ch.send(buildArchivePublicPanel());
+      rememberPanelChannel(interaction.guild.id, "archive", ch.id);
     } else if (kind === "control") {
       const payload = hubPayload(interaction.guild);
       const msg = await ch.send(payload);
@@ -843,7 +945,7 @@ export async function handleAdminInteraction(interaction) {
         dm: "summary",
         family: "rooms",
       }[tabOpen[1]] || tabOpen[1];
-    if (["cars", "logs", "kontr", "mods", "rooms", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
+    if (["cars", "logs", "kontr", "mods", "rooms", "archive", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
     }
@@ -953,6 +1055,20 @@ export async function handleAdminInteraction(interaction) {
         `Пункт: **${MENU_LABELS[value]}**`,
       ]).catch(() => null);
       await interaction.showModal(rulesModal(getConfig(interaction.guildId)));
+      return true;
+    }
+    if (value === "t:leavenoroles") {
+      if (!(await canEditSettings(interaction))) {
+        await safeReply(interaction, "Привязки может менять только владелец или Manage Server.");
+        return true;
+      }
+      const before = getConfig(interaction.guildId);
+      const next = before.leaveLogIncludeNoRoles === false;
+      setConfig(interaction.guildId, { leaveLogIncludeNoRoles: next });
+      logAdminChange(interaction, "Админка: лог выхода без ролей", [
+        `Статус: **${before.leaveLogIncludeNoRoles === false ? "выкл" : "вкл"}** → **${next ? "вкл" : "выкл"}**`,
+      ]).catch(() => null);
+      await refreshTopic(interaction, "logs");
       return true;
     }
     if (value === "t:antinuke") {
