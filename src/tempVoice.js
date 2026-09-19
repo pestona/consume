@@ -95,8 +95,7 @@ export function tempVoicePanelPayload() {
     `👥 = Установить количество слотов в комнате\n` +
     `👑 = Передать право владения комнатой\n` +
     `📝 = Сменить название вашей комнаты\n` +
-    `🔓 = Выдать/забрать доступ пользователю в вашу комнату\n` +
-    `📣 = Все ко мне — собрать людей из видимых войсов (не трогает AFK и скрытые)\n\n` +
+    `🔓 = Выдать/забрать доступ пользователю в вашу комнату\n\n` +
     `😤 Создание временных комнат — только для участников семьи **Consume**!`;
 
   const container = new ContainerBuilder()
@@ -117,15 +116,8 @@ export function tempVoicePanelPayload() {
     new ButtonBuilder().setCustomId("c:tv:rename").setEmoji("📝").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("c:tv:access").setEmoji("🔓").setStyle(ButtonStyle.Secondary),
   );
-  const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("c:tv:gather")
-      .setEmoji("📣")
-      .setLabel("Все ко мне")
-      .setStyle(ButtonStyle.Primary),
-  );
 
-  container.addActionRowComponents(row1, row2, row3);
+  container.addActionRowComponents(row1, row2);
   return { components: [container], flags: V2 };
 }
 
@@ -171,16 +163,22 @@ function isHiddenOrAfkVoice(channel, guild, cfg) {
   return false;
 }
 
-async function gatherToOwnerRoom(interaction, found) {
+/** Собрать людей из видимых войсов к текущему войсу нажавшего (AFK/скрытые не трогаем). */
+export async function gatherEveryoneToMe(interaction) {
   const guild = interaction.guild;
+  const member = interaction.member;
+  const dest = member?.voice?.channel;
+  if (!dest || (dest.type !== ChannelType.GuildVoice && dest.type !== ChannelType.GuildStageVoice)) {
+    await safeReply(interaction, "Сначала зайди в голосовой канал — туда и соберу.");
+    return;
+  }
+
   const cfg = getConfig(guild.id);
-  const dest = found.channel;
   const targets = [];
 
   for (const ch of guild.channels.cache.values()) {
     if (String(ch.id) === String(dest.id)) continue;
     if (isHiddenOrAfkVoice(ch, guild, cfg)) continue;
-    if (!ch.isVoiceBased?.() && ch.type !== ChannelType.GuildVoice && ch.type !== ChannelType.GuildStageVoice) continue;
     for (const m of ch.members.values()) {
       if (m.user.bot) continue;
       if (String(m.id) === String(interaction.user.id)) continue;
@@ -189,7 +187,7 @@ async function gatherToOwnerRoom(interaction, found) {
   }
 
   if (!targets.length) {
-    await interaction.reply(eph("Некого перемещать — в видимых войсах никого нет."));
+    await safeReply(interaction, "Некого перемещать — в видимых войсах никого нет.");
     return;
   }
 
@@ -224,13 +222,6 @@ export async function handleTempVoiceInteraction(interaction) {
   if (!id.startsWith("c:tv:")) return false;
   if (!interaction.guild) {
     await safeReply(interaction, "Только на сервере.");
-    return true;
-  }
-
-  if (interaction.isButton() && id === "c:tv:gather") {
-    const found = await requireOwnedRoom(interaction);
-    if (!found) return true;
-    await gatherToOwnerRoom(interaction, found);
     return true;
   }
 

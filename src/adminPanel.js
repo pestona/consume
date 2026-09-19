@@ -29,7 +29,7 @@ import {
   kontraktPanelRows,
 } from "./kontrakt.js";
 import { buildAutoparkEmbed, autoparkPanelRows, registerPanel } from "./autopark.js";
-import { tempVoicePanelPayload } from "./tempVoice.js";
+import { tempVoicePanelPayload, gatherEveryoneToMe } from "./tempVoice.js";
 import { buildArchivePublicPanel } from "./archive.js";
 import { createChannelBackup, getChannelBackupMeta, restoreChannelBackup } from "./channelBackup.js";
 import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
@@ -172,6 +172,7 @@ function hubPayload(guild) {
     new ActionRowBuilder().addComponents(
       btn("c:adm:tab:summary", "Сводка", "📊"),
       btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
+      btn("c:adm:gather", "Все ко мне", "📣", ButtonStyle.Success),
     ),
   ]);
 }
@@ -927,6 +928,12 @@ export async function handleAdminInteraction(interaction) {
 
   if (!(await canOpenPanel(interaction))) {
     await safeReply(interaction, "Нет доступа к панели.");
+    return true;
+  }
+
+  if (interaction.isButton() && id === "c:adm:gather") {
+    await gatherEveryoneToMe(interaction);
+    logAdminChange(interaction, "Админка: все ко мне", []).catch(() => null);
     return true;
   }
 
