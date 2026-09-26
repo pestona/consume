@@ -1,6 +1,5 @@
 import "dotenv/config";
 import {
-  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
