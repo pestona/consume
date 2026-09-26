@@ -336,20 +336,14 @@ export async function handleSborCommand(interaction) {
   }
 
   const whenStr = interaction.options.getString("when", true);
-  const mainLimit = interaction.options.getInteger("main") || 10;
-  const subLimit = interaction.options.getInteger("subs") || 6;
-  const dmRole = interaction.options.getRole("role");
-  const pingEveryone = Boolean(interaction.options.getBoolean("everyone"));
+  const dmRole = interaction.options.getRole("role", true);
+  const mainLimit = interaction.options.getInteger("main", true);
+  const subLimit = 6;
+  const pingEveryone = String(dmRole.id) === String(interaction.guildId);
   const channel =
-    interaction.options.getChannel("channel") ||
-    (interaction.channel?.isTextBased?.() && !interaction.channel.isThread?.()
+    interaction.channel?.isTextBased?.() && !interaction.channel.isThread?.()
       ? interaction.channel
-      : null);
-
-  if (!dmRole && !pingEveryone) {
-    await safeReply(interaction, "Укажи **роль** или включи **everyone**.");
-    return;
-  }
+      : null;
 
   const startsAt = parseWhen(whenStr);
   if (!startsAt) {
@@ -360,7 +354,7 @@ export async function handleSborCommand(interaction) {
     return;
   }
   if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
-    await safeReply(interaction, "Вызови команду в текстовом канале или укажи канал.");
+    await safeReply(interaction, "Вызови команду в текстовом канале.");
     return;
   }
 
@@ -373,12 +367,12 @@ export async function handleSborCommand(interaction) {
     messageId: null,
     threadId: null,
     organizerId: String(interaction.user.id),
-    dmRoleId: dmRole && !pingEveryone ? String(dmRole.id) : null,
-    pingEveryone: pingEveryone || !dmRole,
+    dmRoleId: pingEveryone ? null : String(dmRole.id),
+    pingEveryone,
     eventNo,
     startsAt: startsAt.getTime(),
     mainLimit: Math.min(50, Math.max(1, mainLimit)),
-    subLimit: Math.min(50, Math.max(0, subLimit)),
+    subLimit,
     open: true,
     main: [],
     subs: [],

@@ -72,37 +72,17 @@ function buildCommands() {
         o
           .setName("role")
           .setNameLocalizations({ ru: "роль" })
-          .setDescription("Роль для пинга и ЛС (не нужно, если everyone)")
-          .setRequired(false),
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName("everyone")
-          .setDescription("Тегнуть @everyone вместо роли")
-          .setRequired(false),
+          .setDescription("Роль для пинга и ЛС (можно выбрать @everyone)")
+          .setRequired(true),
       )
       .addIntegerOption((o) =>
         o
           .setName("main")
           .setNameLocalizations({ ru: "основа" })
-          .setDescription("Слотов в основе (по умолчанию 10)")
+          .setDescription("Слотов в основе")
+          .setRequired(true)
           .setMinValue(1)
           .setMaxValue(50),
-      )
-      .addIntegerOption((o) =>
-        o
-          .setName("subs")
-          .setNameLocalizations({ ru: "замены" })
-          .setDescription("Слотов запасных (по умолчанию 6)")
-          .setMinValue(0)
-          .setMaxValue(50),
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("channel")
-          .setNameLocalizations({ ru: "канал" })
-          .setDescription("Куда отправить (по умолчанию — этот канал)")
-          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
       ),
   ].map((c) => c.toJSON());
 }
