@@ -1,6 +1,5 @@
 import "dotenv/config";
 import {
-  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
@@ -17,7 +16,6 @@ import {
 import { handleTicketInteraction } from "./tickets.js";
 import { handleMapsInteraction } from "./maps.js";
 import { handleKontraktInteraction } from "./kontrakt.js";
-import { handleSborCommand, handleSborInteraction, restoreSborCountdowns } from "./sbor.js";
 import { handleAutoparkInteraction, autoparkExpireLoop } from "./autopark.js";
 import { handleSpamInteraction } from "./spam.js";
 import { handleTempVoiceInteraction, onTempVoiceState } from "./tempVoice.js";
@@ -51,37 +49,6 @@ function buildCommands() {
       .setName("panel")
       .setDescription("Панель управления Consume: публикация и привязки ролей/каналов")
       .setDMPermission(false),
-    new SlashCommandBuilder()
-      .setName("sbor")
-      .setNameLocalizations({ ru: "сбор" })
-      .setDescription("Создать сбор участников (ВЗХ / МП / Поставка)")
-      .setDMPermission(false)
-      .addStringOption((o) =>
-        o
-          .setName("type")
-          .setNameLocalizations({ ru: "тип" })
-          .setDescription("Тип сбора")
-          .setRequired(true)
-          .addChoices(
-            { name: "ВЗХ", value: "ВЗХ" },
-            { name: "МП", value: "МП" },
-            { name: "Поставка", value: "Поставка" },
-          ),
-      )
-      .addRoleOption((o) =>
-        o
-          .setName("role")
-          .setNameLocalizations({ ru: "роль" })
-          .setDescription("Роль для пинга")
-          .setRequired(true),
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("channel")
-          .setNameLocalizations({ ru: "канал" })
-          .setDescription("Куда отправить сбор (по умолчанию — текущий канал)")
-          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
-      ),
   ].map((c) => c.toJSON());
 }
 
@@ -112,7 +79,6 @@ async function syncCommands(readyClient) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   await syncCommands(readyClient);
-  restoreSborCountdowns(readyClient);
   autoparkExpireLoop(readyClient).catch((err) => logJson("ERROR", "autopark loop", { error: String(err) }));
   logJson("INFO", `Бот запущен: ${readyClient.user.tag} (${readyClient.user.id})`);
 });
@@ -159,10 +125,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handlePanelCommand(interaction);
       return;
     }
-    if (interaction.isChatInputCommand() && (interaction.commandName === "sbor" || interaction.commandName === "сбор")) {
-      await handleSborCommand(interaction);
-      return;
-    }
 
     const handlers = [
       handleTempVoiceInteraction,
@@ -172,7 +134,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       handleTicketInteraction,
       handleMapsInteraction,
       handleKontraktInteraction,
-      handleSborInteraction,
       handleAutoparkInteraction,
       handleSpamInteraction,
     ];

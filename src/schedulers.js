@@ -25,7 +25,7 @@ export async function logBotAction(interaction) {
   const logCh = guild?.channels.cache.get(String(cfg.botActionLogChannelId));
   if (!logCh?.isTextBased?.()) return;
 
-  const name = interaction.commandName === "sbor" ? "сбор" : interaction.commandName;
+  const name = interaction.commandName;
   const detail = actionDetail(interaction);
   const emb = new EmbedBuilder()
     .setColor(COLOR_DARK)

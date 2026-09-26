@@ -22,7 +22,6 @@ const empty = () => ({
   autoparkCars: {},
   autoparkPanels: {},
   guildConfig: {},
-  sbors: {},
 });
 
 let state = empty();
@@ -37,7 +36,6 @@ function normalize(parsed) {
     next.autoparkPanels && typeof next.autoparkPanels === "object" ? next.autoparkPanels : {};
   next.guildConfig =
     next.guildConfig && typeof next.guildConfig === "object" ? next.guildConfig : {};
-  next.sbors = next.sbors && typeof next.sbors === "object" ? next.sbors : {};
   return next;
 }
 
@@ -174,24 +172,6 @@ export function getContract(messageId) {
 
 export function setContract(messageId, data) {
   state.contracts[String(messageId)] = data;
-  save();
-}
-
-export function getAllSbors() {
-  return { ...state.sbors };
-}
-
-export function getSbor(messageId) {
-  return state.sbors[String(messageId)] || null;
-}
-
-export function setSbor(messageId, data) {
-  state.sbors[String(messageId)] = data;
-  save();
-}
-
-export function deleteSbor(messageId) {
-  delete state.sbors[String(messageId)];
   save();
 }
 

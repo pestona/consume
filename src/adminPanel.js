@@ -76,7 +76,7 @@ function uiKey(interaction) {
 }
 
 function uiGet(interaction) {
-  return panelUi.get(uiKey(interaction)) || { tab: "mods", sborKind: null };
+  return panelUi.get(uiKey(interaction)) || { tab: "mods" };
 }
 
 function uiSet(interaction, patch) {
@@ -151,8 +151,7 @@ function hubPayload(guild) {
     `Выбери раздел — у каждого своя настройка.\n\n` +
     `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
     `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
-    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
-    `Сборы: команда **/сбор**`;
+    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи`;
 
   return v2Message("Админка Consume", body, [
     new ActionRowBuilder().addComponents(
@@ -353,7 +352,7 @@ function topicStatus(guild, tab, ui) {
       title: "Модераторы бота",
       body:
         `Сейчас: ${mentionRoles(cfg.moderatorRoleIds) || "не заданы"}\n\n` +
-        "Кто может открывать админку и **/сбор** (кроме владельца и Manage Server).",
+        "Кто может открывать админку (кроме владельца и Manage Server).",
       options: [{ label: "Роли модераторов", value: "r:mod", emoji: "🛡️", description: "Доступ к панели" }],
       placeholder: "Кто модератор бота?",
     };
@@ -940,7 +939,6 @@ export async function handleAdminInteraction(interaction) {
         accept: "apps",
         channels: "logs",
         texts: "summary",
-        sbor: "mods",
         daily: "summary",
         dm: "summary",
         family: "rooms",
