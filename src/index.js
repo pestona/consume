@@ -63,24 +63,23 @@ function buildCommands() {
       .setDMPermission(false)
       .addStringOption((o) =>
         o
-          .setName("date")
-          .setNameLocalizations({ ru: "дата" })
-          .setDescription("Дата (например 26.09.2026)")
-          .setRequired(true),
-      )
-      .addStringOption((o) =>
-        o
-          .setName("time")
+          .setName("when")
           .setNameLocalizations({ ru: "время" })
-          .setDescription("Время МСК (например 14:11)")
+          .setDescription("15 | 15:00 | 15 00 | 26.09 15:00 | 26.09.2026 14:11")
           .setRequired(true),
       )
       .addRoleOption((o) =>
         o
           .setName("role")
           .setNameLocalizations({ ru: "роль" })
-          .setDescription("Роль для пинга / ЛС")
-          .setRequired(true),
+          .setDescription("Роль для пинга и ЛС (не нужно, если everyone)")
+          .setRequired(false),
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName("everyone")
+          .setDescription("Тегнуть @everyone вместо роли")
+          .setRequired(false),
       )
       .addIntegerOption((o) =>
         o
@@ -102,7 +101,7 @@ function buildCommands() {
         o
           .setName("channel")
           .setNameLocalizations({ ru: "канал" })
-          .setDescription("Куда отправить сбор (по умолчанию — текущий)")
+          .setDescription("Куда отправить (по умолчанию — этот канал)")
           .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
       ),
   ].map((c) => c.toJSON());

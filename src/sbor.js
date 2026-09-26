@@ -11,13 +11,13 @@ import { canModerate } from "./perms.js";
 import {
   COLOR_GREEN,
   COLOR_RED,
-  formatDateRu,
   hasAnyRole,
   isGuildManager,
   logJson,
   resolveMember,
   safeDm,
   safeReply,
+  sleep,
   withLock,
   MSK,
 } from "./util.js";
@@ -45,38 +45,69 @@ function findByPanel(messageId) {
   return s ? { id: String(messageId), state: s } : null;
 }
 
-/** Парс "26.09.2026" / "26.09" + "14:11" → Date в MSK. */
-export function parseSborDateTime(dateStr, timeStr) {
-  const d = String(dateStr || "").trim();
-  const t = String(timeStr || "").trim();
-  const dm = d.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$/);
-  const tm = t.match(/^(\d{1,2}):(\d{2})$/);
-  if (!dm || !tm) return null;
-  let year = dm[3] ? Number(dm[3]) : new Date().getFullYear();
-  if (year < 100) year += 2000;
-  const month = Number(dm[2]);
-  const day = Number(dm[1]);
-  const hour = Number(tm[1]);
-  const minute = Number(tm[2]);
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
-  // MSK = UTC+3
-  const utc = Date.UTC(year, month - 1, day, hour - 3, minute, 0);
-  const dt = new Date(utc);
-  if (Number.isNaN(dt.getTime())) return null;
-  return dt;
-}
-
-function fmtDate(dt) {
-  return formatDateRu(dt, MSK);
-}
-
-function fmtTime(dt) {
-  return new Intl.DateTimeFormat("ru-RU", {
+function mskParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: MSK,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(dt);
+  }).formatToParts(date);
+  const get = (t) => Number(parts.find((p) => p.type === t)?.value || 0);
+  return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour"), minute: get("minute") };
+}
+
+function mskDate(year, month, day, hour, minute) {
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+  const utc = Date.UTC(year, month - 1, day, hour - 3, minute, 0);
+  const dt = new Date(utc);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+/**
+ * Одно поле времени:
+ *  15 / +15       → через N минут
+ *  15:00 / 15 00  → сегодня в 15:00 МСК
+ *  26.09 15:00 / 26.09.2026 15 00 / 26.09.2026 14:11
+ */
+export function parseWhen(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+  const s = raw.replace(/\s+/g, " ").trim();
+
+  // через N минут
+  if (/^\+?\d{1,4}$/.test(s)) {
+    const mins = Number(s.replace("+", ""));
+    if (mins < 0 || mins > 7 * 24 * 60) return null;
+    return new Date(Date.now() + mins * 60_000);
+  }
+
+  // сегодня HH:MM / HH MM
+  let m = s.match(/^(\d{1,2})[:\s.](\d{2})$/);
+  if (m) {
+    const now = mskParts();
+    return mskDate(now.year, now.month, now.day, Number(m[1]), Number(m[2]));
+  }
+
+  // ДД.ММ[.ГГГГ] HH:MM / HH MM
+  m = s.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s+(\d{1,2})[:\s.](\d{2})$/);
+  if (m) {
+    let year = m[3] ? Number(m[3]) : mskParts().year;
+    if (year < 100) year += 2000;
+    return mskDate(year, Number(m[2]), Number(m[1]), Number(m[4]), Number(m[5]));
+  }
+
+  // ДД.ММ[.ГГГГ] без времени → сегодняшняя логика: 00:00 того дня? лучше 12:00
+  m = s.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$/);
+  if (m) {
+    let year = m[3] ? Number(m[3]) : mskParts().year;
+    if (year < 100) year += 2000;
+    return mskDate(year, Number(m[2]), Number(m[1]), 12, 0);
+  }
+
+  return null;
 }
 
 function fmtShort(dt) {
@@ -93,56 +124,97 @@ function fmtShort(dt) {
 }
 
 function listMentions(ids) {
-  if (!ids?.length) return "—";
+  if (!ids?.length) return null;
   return ids.map((id, i) => `${i + 1}. <@${id}>`).join("\n").slice(0, 1024);
 }
 
+function ensureLists(state) {
+  state.main = state.main || [];
+  state.subs = state.subs || [];
+  state.reserve = state.reserve || [];
+  state.left = state.left || [];
+  return state;
+}
+
 function removeFromAll(state, userId) {
+  ensureLists(state);
   const uid = String(userId);
-  const was =
-    state.main.includes(uid) || state.subs.includes(uid) || state.reserve.includes(uid);
+  let from = null;
+  if (state.main.includes(uid)) from = "main";
+  else if (state.subs.includes(uid)) from = "subs";
+  else if (state.reserve.includes(uid)) from = "reserve";
   state.main = state.main.filter((id) => id !== uid);
   state.subs = state.subs.filter((id) => id !== uid);
   state.reserve = state.reserve.filter((id) => id !== uid);
-  return was;
+  return from;
 }
 
 function buildEmbed(state) {
+  ensureLists(state);
   const at = new Date(state.startsAt);
-  const left = Math.max(0, state.mainLimit - state.main.length);
+  const leftSlots = Math.max(0, state.mainLimit - state.main.length);
   const status = state.open ? "🟢 Сбор открыт" : "🔴 Сбор закрыт";
   const color = state.open ? COLOR_GREEN : COLOR_RED;
 
+  const pingLabel = state.pingEveryone
+    ? "@everyone"
+    : state.dmRoleId
+      ? `<@&${state.dmRoleId}>`
+      : "—";
+
   const info =
-    `🗓️ **Дата:** ${fmtDate(at)}\n` +
-    `⏳ **Время:** ${fmtTime(at)}\n` +
-    `📌 **Сбор:** ${fmtShort(at)}\n` +
+    `📌 **Время:** ${fmtShort(at)}\n` +
     `👤 **Организатор:** <@${state.organizerId}>\n` +
-    `📢 **ЛС роль:** ${state.dmRoleId ? `<@&${state.dmRoleId}>` : "—"}`;
+    `📢 **Пинг / ЛС:** ${pingLabel}`;
+
+  const fields = [{ name: "Информация", value: info, inline: false }];
+
+  if (state.main.length) {
+    fields.push({
+      name: `Участники (${state.main.length}/${state.mainLimit})`,
+      value: listMentions(state.main),
+      inline: true,
+    });
+  }
+  if (state.subs.length) {
+    fields.push({
+      name: `Замены (${state.subs.length}/${state.subLimit})`,
+      value: listMentions(state.subs),
+      inline: true,
+    });
+  }
+  if (state.reserve.length) {
+    fields.push({
+      name: `Резерв (${state.reserve.length})`,
+      value: listMentions(state.reserve),
+      inline: true,
+    });
+  }
+  if (state.left.length) {
+    fields.push({
+      name: `Сняли + (${state.left.length})`,
+      value: listMentions(state.left),
+      inline: false,
+    });
+  }
 
   return new EmbedBuilder()
     .setColor(color)
     .setTitle(`Мероприятие: ${state.eventNo}`)
-    .addFields(
-      { name: "Информация", value: info, inline: false },
-      {
-        name: `Участники (${state.main.length}/${state.mainLimit})`,
-        value: listMentions(state.main),
-        inline: true,
-      },
-      {
-        name: `Замены (${state.subs.length}/${state.subLimit})`,
-        value: listMentions(state.subs),
-        inline: true,
-      },
-      {
-        name: `Резерв (${state.reserve.length})`,
-        value: listMentions(state.reserve),
-        inline: true,
-      },
-    )
+    .addFields(fields)
     .setFooter({
-      text: `Записано: ${state.main.length}/${state.mainLimit} (осталось ${left}) | Замена: ${state.subs.length} | ${status}`,
+      text: `Записано: ${state.main.length}/${state.mainLimit} (осталось ${leftSlots}) | Замена: ${state.subs.length} | ${status}`,
+    });
+}
+
+function dmEmbed(state) {
+  const when = fmtShort(new Date(state.startsAt));
+  return new EmbedBuilder()
+    .setColor(COLOR_GREEN)
+    .setTitle("Важное сообщение по мероприятию")
+    .addFields({
+      name: "Мероприятие",
+      value: `1. **${state.eventNo}** (${when})\n2. Создал <@${state.organizerId}>`,
     });
 }
 
@@ -167,7 +239,7 @@ function adminRows(state) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`c:sbor:ping:${state.messageId}`)
-        .setLabel("Позвать всех (@everyone)")
+        .setLabel("Позвать всех")
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`c:sbor:voice:${state.messageId}`)
@@ -184,9 +256,9 @@ function adminRows(state) {
 const HOW_TO =
   "📋 **Как записаться:**\n" +
   "• Напиши `+` — попадёшь в резерв\n" +
-  "• Модератор ставит ✅ — основа · 🔥 — запасные\n" +
-  "• Снятие ✅/🔥 — назад в резерв\n" +
-  "• Напиши `-` — уберёшь плюс";
+  "• Модератор ставит ✅ — основа · 🔥 — замены\n" +
+  "• Снятие ✅/🔥 — снова в резерв\n" +
+  "• Напиши `-` — уберёшь плюс (попадёшь в список снявших)";
 
 async function refreshPanel(client, messageId) {
   const state = getSbor(messageId);
@@ -222,6 +294,37 @@ async function memberCanMod(member, guild, state) {
   return hasAnyRole(member, cfg.moderatorRoleIds);
 }
 
+async function collectDmTargets(guild, state) {
+  if (state.pingEveryone) {
+    ensureLists(state);
+    return [...new Set([...state.main, ...state.subs, ...state.reserve])];
+  }
+  if (!state.dmRoleId) return [];
+  await guild.members.fetch().catch(() => null);
+  return guild.members.cache
+    .filter((m) => !m.user.bot && m.roles.cache.has(String(state.dmRoleId)))
+    .map((m) => m.id);
+}
+
+async function sendSborDms(guild, state) {
+  const ids = await collectDmTargets(guild, state);
+  const emb = dmEmbed(state);
+  let ok = 0;
+  let fail = 0;
+  for (const uid of ids) {
+    const user = await guild.client.users.fetch(uid).catch(() => null);
+    if (!user) {
+      fail += 1;
+      continue;
+    }
+    const r = await safeDm(user, { embeds: [emb] });
+    if (r) ok += 1;
+    else fail += 1;
+    await sleep(350);
+  }
+  return { ok, fail, total: ids.length };
+}
+
 export async function handleSborCommand(interaction) {
   if (!interaction.guild) {
     await safeReply(interaction, "Только на сервере.");
@@ -232,39 +335,46 @@ export async function handleSborCommand(interaction) {
     return;
   }
 
-  const dateStr = interaction.options.getString("date", true);
-  const timeStr = interaction.options.getString("time", true);
+  const whenStr = interaction.options.getString("when", true);
   const mainLimit = interaction.options.getInteger("main") || 10;
   const subLimit = interaction.options.getInteger("subs") || 6;
   const dmRole = interaction.options.getRole("role");
+  const pingEveryone = Boolean(interaction.options.getBoolean("everyone"));
   const channel =
     interaction.options.getChannel("channel") ||
     (interaction.channel?.isTextBased?.() && !interaction.channel.isThread?.()
       ? interaction.channel
       : null);
 
-  const startsAt = parseSborDateTime(dateStr, timeStr);
+  if (!dmRole && !pingEveryone) {
+    await safeReply(interaction, "Укажи **роль** или включи **everyone**.");
+    return;
+  }
+
+  const startsAt = parseWhen(whenStr);
   if (!startsAt) {
-    await safeReply(interaction, "Дата/время: формат `26.09.2026` и `14:11`.");
+    await safeReply(
+      interaction,
+      "Время: `15` (через 15 мин), `15:00` / `15 00`, `26.09 15:00`, `26.09.2026 14:11`.",
+    );
     return;
   }
   if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
-    await safeReply(interaction, "Укажи текстовый канал или вызови команду из канала.");
+    await safeReply(interaction, "Вызови команду в текстовом канале или укажи канал.");
     return;
   }
 
   await interaction.deferReply({ ephemeral: true });
 
   const eventNo = nextEventNo(interaction.guildId);
-  const organizerId = interaction.user.id;
-
   const draft = {
     guildId: String(interaction.guildId),
     channelId: String(channel.id),
     messageId: null,
     threadId: null,
-    organizerId: String(organizerId),
-    dmRoleId: dmRole ? String(dmRole.id) : null,
+    organizerId: String(interaction.user.id),
+    dmRoleId: dmRole && !pingEveryone ? String(dmRole.id) : null,
+    pingEveryone: pingEveryone || !dmRole,
     eventNo,
     startsAt: startsAt.getTime(),
     mainLimit: Math.min(50, Math.max(1, mainLimit)),
@@ -273,6 +383,7 @@ export async function handleSborCommand(interaction) {
     main: [],
     subs: [],
     reserve: [],
+    left: [],
     createdAt: Date.now(),
   };
 
@@ -281,10 +392,7 @@ export async function handleSborCommand(interaction) {
       embeds: [buildEmbed({ ...draft, messageId: "0" })],
       components: adminRows({ ...draft, messageId: "0" }),
     });
-
     draft.messageId = panel.id;
-
-    // fix buttons with real message id
     await panel.edit({ embeds: [buildEmbed(draft)], components: adminRows(draft) });
 
     const thread = await panel.startThread({
@@ -296,17 +404,29 @@ export async function handleSborCommand(interaction) {
     setSbor(panel.id, draft);
 
     await thread.send({ content: HOW_TO });
-    await thread.send({
-      content: dmRole
-        ? `${dmRole} Сбор! Запишитесь через \`+\` в этой ветке.`
-        : "@everyone Сбор! Запишитесь через `+` в этой ветке.",
-      allowedMentions: dmRole ? { roles: [dmRole.id] } : { parse: ["everyone"] },
-    });
 
-    await interaction.editReply(`Сбор создан: ${panel.url}`);
+    if (draft.pingEveryone) {
+      await thread.send({
+        content: "@everyone Сбор! Запишитесь через `+` в этой ветке.",
+        allowedMentions: { parse: ["everyone"] },
+      });
+    } else {
+      await thread.send({
+        content: `<@&${draft.dmRoleId}> Сбор! Запишитесь через \`+\` в этой ветке.`,
+        allowedMentions: { roles: [draft.dmRoleId] },
+      });
+    }
+
+    let dmHint = "";
+    if (draft.dmRoleId) {
+      const r = await sendSborDms(interaction.guild, draft);
+      dmHint = `\nЛС по роли: **${r.ok}** / ${r.total} (не доставлено: ${r.fail}).`;
+    }
+
+    await interaction.editReply(`Сбор создан: ${panel.url}${dmHint}`);
   } catch (err) {
     logJson("ERROR", "sbor create", { error: String(err) });
-    await interaction.editReply("Не удалось создать сбор. Проверьте права бота (сообщения, ветки).");
+    await interaction.editReply("Не удалось создать сбор. Проверьте права бота (сообщения, ветки, упоминания).");
   }
 }
 
@@ -328,6 +448,7 @@ export async function handleSborInteraction(interaction) {
     return true;
   }
   const { state } = found;
+  ensureLists(state);
 
   if (!(await canManageSbor(interaction, state))) {
     await safeReply(interaction, "Только организатор или модератор.");
@@ -367,9 +488,15 @@ export async function handleSborInteraction(interaction) {
   }
 
   if (action === "ping") {
-    await threadSend(interaction.client, state, "@everyone Сбор! Зайдите в войс / будьте готовы.", {
-      allowedMentions: { parse: ["everyone"] },
-    });
+    if (state.pingEveryone || !state.dmRoleId) {
+      await threadSend(interaction.client, state, "@everyone Сбор! Зайдите в войс / будьте готовы.", {
+        allowedMentions: { parse: ["everyone"] },
+      });
+    } else {
+      await threadSend(interaction.client, state, `<@&${state.dmRoleId}> Сбор! Зайдите в войс / будьте готовы.`, {
+        allowedMentions: { roles: [state.dmRoleId] },
+      });
+    }
     await interaction.reply({ content: "Пинг отправлен в ветку.", ephemeral: true });
     return true;
   }
@@ -382,13 +509,14 @@ export async function handleSborInteraction(interaction) {
       return true;
     }
     await interaction.deferReply({ ephemeral: true });
-    const ids = [...new Set([...state.main, ...state.subs, ...state.reserve])];
+    // только основа + замены
+    const ids = [...new Set([...state.main, ...state.subs])];
     let moved = 0;
     let failed = 0;
     for (const uid of ids) {
-      if (uid === String(interaction.user.id)) continue;
       const mbr = await interaction.guild.members.fetch(uid).catch(() => null);
       if (!mbr?.voice?.channelId) continue;
+      if (mbr.voice.channelId === dest.id) continue;
       try {
         await mbr.voice.setChannel(dest, "Consume сбор: все в войс");
         moved += 1;
@@ -397,30 +525,19 @@ export async function handleSborInteraction(interaction) {
       }
     }
     await interaction.editReply(
-      failed ? `Переместил **${moved}**, ошибок: **${failed}**.` : `Переместил в войс: **${moved}**.`,
+      failed ? `Переместил **${moved}** (основа+замены), ошибок: **${failed}**.` : `Переместил в войс: **${moved}** (основа+замены).`,
     );
     return true;
   }
 
   if (action === "dm") {
     await interaction.deferReply({ ephemeral: true });
-    const ids = [...new Set([...state.main, ...state.subs, ...state.reserve])];
-    const when = fmtShort(new Date(state.startsAt));
-    let ok = 0;
-    let fail = 0;
-    for (const uid of ids) {
-      const user = await interaction.client.users.fetch(uid).catch(() => null);
-      if (!user) {
-        fail += 1;
-        continue;
-      }
-      const r = await safeDm(user, {
-        content: `Напоминание: **Мероприятие ${state.eventNo}** — сбор **${when}** на сервере **${interaction.guild.name}**.`,
-      });
-      if (r) ok += 1;
-      else fail += 1;
-    }
-    await interaction.editReply(`ЛС отправлено: **${ok}**, не удалось: **${fail}**.`);
+    const r = await sendSborDms(interaction.guild, state);
+    await interaction.editReply(
+      state.pingEveryone
+        ? `ЛС записанным: **${r.ok}** / ${r.total} (не доставлено: ${r.fail}).`
+        : `ЛС по роли: **${r.ok}** / ${r.total} (не доставлено: ${r.fail}).`,
+    );
     return true;
   }
 
@@ -437,21 +554,21 @@ export async function onSborMessage(message) {
   const text = String(message.content || "").trim();
   if (text !== "+" && text !== "-") return;
 
-  const { id: messageId, state } = found;
+  const { id: messageId } = found;
   const uid = String(message.author.id);
 
   await withLock(`sbor:${messageId}`, async () => {
     const fresh = getSbor(messageId);
     if (!fresh) return;
+    ensureLists(fresh);
 
     if (text === "+") {
       if (!fresh.open) {
-        await message.reply({ content: "Сбор закрыт.", allowedMentions: { repliedUser: false } }).catch(() => null);
+        await message.reply({ content: "Сбор закрыт — запись через `+` недоступна.", allowedMentions: { repliedUser: false } }).catch(() => null);
         return;
       }
-      if (fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid)) {
-        return;
-      }
+      if (fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid)) return;
+      fresh.left = fresh.left.filter((id) => id !== uid);
       fresh.reserve.push(uid);
       setSbor(messageId, fresh);
       await refreshPanel(message.client, messageId);
@@ -459,8 +576,9 @@ export async function onSborMessage(message) {
     }
 
     // "-"
-    const was = removeFromAll(fresh, uid);
-    if (was) {
+    const from = removeFromAll(fresh, uid);
+    if (from) {
+      if (!fresh.left.includes(uid)) fresh.left.push(uid);
       setSbor(messageId, fresh);
       await refreshPanel(message.client, messageId);
     }
@@ -488,7 +606,6 @@ export async function onSborReaction(reaction, user, added) {
     return;
   }
 
-  // цель — автор сообщения с "+"
   if (msg.partial) await msg.fetch().catch(() => null);
   if (msg.author?.bot) return;
   const targetId = String(msg.author?.id || "");
@@ -497,28 +614,26 @@ export async function onSborReaction(reaction, user, added) {
   await withLock(`sbor:${panelId}`, async () => {
     const state = getSbor(panelId);
     if (!state) return;
+    ensureLists(state);
 
     if (!added) {
-      // снятие ✅/🔥 → назад в резерв (если ещё в основе/заменах)
+      // снятие любой галочки/огонька → снова в резерв
       if (state.main.includes(targetId) || state.subs.includes(targetId)) {
         removeFromAll(state, targetId);
         state.reserve.push(targetId);
+        state.left = state.left.filter((id) => id !== targetId);
         setSbor(panelId, state);
         await refreshPanel(reaction.client, panelId);
       }
       return;
     }
 
-    if (!state.open) {
-      await reaction.users.remove(user.id).catch(() => null);
-      return;
-    }
-
+    // даже если сбор закрыт — галочки/огоньки работают
     removeFromAll(state, targetId);
+    state.left = state.left.filter((id) => id !== targetId);
 
     if (emoji === REACT_MAIN) {
       if (state.main.length >= state.mainLimit) {
-        // нет мест в основе — в замены или резерв
         if (state.subs.length < state.subLimit) state.subs.push(targetId);
         else state.reserve.push(targetId);
       } else {
