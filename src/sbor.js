@@ -124,8 +124,16 @@ function fmtShort(dt) {
 }
 
 function listMentions(ids) {
-  if (!ids?.length) return null;
+  if (!ids?.length) return "—";
   return ids.map((id, i) => `${i + 1}. <@${id}>`).join("\n").slice(0, 1024);
+}
+
+function normSign(text) {
+  const t = String(text || "").trim();
+  if (t === "+") return "+";
+  // обычный минус и похожие тире
+  if (t === "-" || t === "−" || t === "–" || t === "—" || t === "﹣") return "-";
+  return t;
 }
 
 function ensureLists(state) {
@@ -197,29 +205,24 @@ function buildEmbed(state) {
     `👤 **Организатор:** <@${state.organizerId}>\n` +
     `📢 **Пинг / ЛС:** ${pingLabel}`;
 
-  const fields = [{ name: "Информация", value: info, inline: false }];
-
-  if (state.main.length) {
-    fields.push({
+  const fields = [
+    { name: "Информация", value: info, inline: false },
+    {
       name: `Участники (${state.main.length}/${state.mainLimit})`,
       value: listMentions(state.main),
       inline: true,
-    });
-  }
-  if (state.subs.length) {
-    fields.push({
+    },
+    {
       name: `Замены (${state.subs.length}/${state.subLimit})`,
       value: listMentions(state.subs),
       inline: true,
-    });
-  }
-  if (state.reserve.length) {
-    fields.push({
+    },
+    {
       name: `Резерв (${state.reserve.length})`,
       value: listMentions(state.reserve),
       inline: true,
-    });
-  }
+    },
+  ];
   if (state.left.length) {
     fields.push({
       name: `Сняли + (${state.left.length})`,
@@ -575,7 +578,7 @@ export async function onSborMessage(message) {
   const found = findByThread(message.channel.id);
   if (!found) return;
 
-  const text = String(message.content || "").trim();
+  const text = normSign(message.content);
   if (text !== "+" && text !== "-") return;
 
   const { id: messageId } = found;
@@ -604,21 +607,15 @@ export async function onSborMessage(message) {
       return;
     }
 
-    // "-"
-    if (signOutUser(fresh, uid)) {
-      setSbor(messageId, fresh);
-      await refreshPanel(message.client, messageId);
-    }
+    // "-" — выписать и всегда сохранить (чтобы старый + больше не считался)
+    signOutUser(fresh, uid);
+    setSbor(messageId, fresh);
+    await refreshPanel(message.client, messageId);
   });
 }
 
-/** Удалил сообщение с + → выписать. */
+/** Удалил именно сообщение с + → выписать. Удаление "-" ничего не возвращает в резерв. */
 export async function onSborMessageDelete(message) {
-  try {
-    if (message.partial) await message.fetch().catch(() => null);
-  } catch {
-    /* partial ok */
-  }
   const channel = message.channel;
   if (!channel?.isThread?.()) return;
   const found = findByThread(channel.id);
@@ -626,31 +623,37 @@ export async function onSborMessageDelete(message) {
 
   const { id: panelId } = found;
   const msgId = String(message.id);
+  const content = normSign(message.content);
 
   await withLock(`sbor:${panelId}`, async () => {
     const fresh = getSbor(panelId);
     if (!fresh) return;
     ensureLists(fresh);
 
-    const uid = fresh.plusByMsg[msgId] || (message.author && !message.author.bot ? String(message.author.id) : null);
+    // удалили минус — только убедиться что выписан, в резерв НЕ возвращать
+    if (content === "-") {
+      const uid =
+        (message.author && !message.author.bot && String(message.author.id)) ||
+        null;
+      if (uid && (fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid))) {
+        signOutUser(fresh, uid);
+        setSbor(panelId, fresh);
+        await refreshPanel(message.client, panelId);
+      }
+      return;
+    }
+
+    // только если это отслеживаемое сообщение с "+"
+    const uid = fresh.plusByMsg[msgId];
     if (!uid) return;
 
-    // удалили свой плюс (или tracked msg)
-    const tracked = fresh.plusByMsg[msgId] || fresh.plusByUser[uid] === msgId;
-    const contentWasPlus = String(message.content || "").trim() === "+";
-    if (!tracked && !contentWasPlus) return;
-
-    if (signOutUser(fresh, uid)) {
-      setSbor(panelId, fresh);
-      await refreshPanel(message.client, panelId);
-    } else {
-      clearPlusTrack(fresh, uid);
-      setSbor(panelId, fresh);
-    }
+    signOutUser(fresh, uid);
+    setSbor(panelId, fresh);
+    await refreshPanel(message.client, panelId);
   });
 }
 
-/** Правка + → - (или убрал плюс из текста) → выписать. */
+/** Правка + → - → выписать. Правка на + → записаться. */
 export async function onSborMessageUpdate(oldMessage, newMessage) {
   try {
     if (oldMessage.partial) await oldMessage.fetch().catch(() => null);
@@ -664,12 +667,13 @@ export async function onSborMessageUpdate(oldMessage, newMessage) {
   const found = findByThread(newMessage.channel.id);
   if (!found) return;
 
-  const oldText = String(oldMessage.content || "").trim();
-  const newText = String(newMessage.content || "").trim();
+  const oldText = normSign(oldMessage.content);
+  const newText = normSign(newMessage.content);
   if (oldText === newText) return;
 
   const { id: panelId } = found;
   const uid = String(newMessage.author.id);
+  const mid = String(newMessage.id);
 
   await withLock(`sbor:${panelId}`, async () => {
     const fresh = getSbor(panelId);
@@ -677,21 +681,18 @@ export async function onSborMessageUpdate(oldMessage, newMessage) {
     ensureLists(fresh);
 
     const wasPlus =
-      oldText === "+" ||
-      fresh.plusByMsg[String(newMessage.id)] === uid ||
-      fresh.plusByUser[uid] === String(newMessage.id);
+      oldText === "+" || fresh.plusByMsg[mid] === uid || fresh.plusByUser[uid] === mid;
 
-    // + → - или просто убрал +
+    // + → - (или убрали плюс)
     if (wasPlus && newText !== "+") {
-      if (signOutUser(fresh, uid)) {
-        setSbor(panelId, fresh);
-        await refreshPanel(newMessage.client, panelId);
-      }
+      signOutUser(fresh, uid);
+      setSbor(panelId, fresh);
+      await refreshPanel(newMessage.client, panelId);
       return;
     }
 
-    // что угодно → +
-    if (newText === "+") {
+    // явно изменил текст на +
+    if (newText === "+" && oldText !== "+") {
       if (!fresh.open) return;
       if (!(fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid))) {
         fresh.left = fresh.left.filter((id) => id !== uid);
