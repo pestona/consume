@@ -579,7 +579,10 @@ export async function onSborMessage(message) {
   if (!found) return;
 
   const text = normSign(message.content);
-  if (text !== "+" && text !== "-") return;
+  if (text !== "+" && text !== "-") {
+    await message.delete().catch(() => null);
+    return;
+  }
 
   const { id: messageId } = found;
   const uid = String(message.author.id);
@@ -688,6 +691,9 @@ export async function onSborMessageUpdate(oldMessage, newMessage) {
       signOutUser(fresh, uid);
       setSbor(panelId, fresh);
       await refreshPanel(newMessage.client, panelId);
+      if (newText !== "-") {
+        await newMessage.delete().catch(() => null);
+      }
       return;
     }
 
@@ -701,6 +707,12 @@ export async function onSborMessageUpdate(oldMessage, newMessage) {
       trackPlus(fresh, uid, newMessage.id);
       setSbor(panelId, fresh);
       await refreshPanel(newMessage.client, panelId);
+      return;
+    }
+
+    // правка на что-то кроме +/- — удалить
+    if (newText !== "+" && newText !== "-") {
+      await newMessage.delete().catch(() => null);
     }
   });
 }
