@@ -133,7 +133,37 @@ function ensureLists(state) {
   state.subs = state.subs || [];
   state.reserve = state.reserve || [];
   state.left = state.left || [];
+  state.plusByMsg = state.plusByMsg || {};
+  state.plusByUser = state.plusByUser || {};
   return state;
+}
+
+function clearPlusTrack(state, uid) {
+  const u = String(uid);
+  const mid = state.plusByUser[u];
+  if (mid) {
+    delete state.plusByMsg[String(mid)];
+    delete state.plusByUser[u];
+  }
+  for (const [msgId, owner] of Object.entries(state.plusByMsg)) {
+    if (String(owner) === u) delete state.plusByMsg[msgId];
+  }
+}
+
+function trackPlus(state, uid, msgId) {
+  const u = String(uid);
+  const m = String(msgId);
+  clearPlusTrack(state, u);
+  state.plusByUser[u] = m;
+  state.plusByMsg[m] = u;
+}
+
+function signOutUser(state, uid) {
+  ensureLists(state);
+  const from = removeFromAll(state, uid);
+  clearPlusTrack(state, uid);
+  if (from && !state.left.includes(String(uid))) state.left.push(String(uid));
+  return from;
 }
 
 function removeFromAll(state, userId) {
@@ -539,7 +569,7 @@ export async function handleSborInteraction(interaction) {
 }
 
 export async function onSborMessage(message) {
-  if (!message.guild || message.author.bot) return;
+  if (!message.guild || message.author?.bot) return;
   if (!message.channel?.isThread?.()) return;
 
   const found = findByThread(message.channel.id);
@@ -561,20 +591,115 @@ export async function onSborMessage(message) {
         await message.reply({ content: "Сбор закрыт — запись через `+` недоступна.", allowedMentions: { repliedUser: false } }).catch(() => null);
         return;
       }
-      if (fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid)) return;
+      if (fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid)) {
+        trackPlus(fresh, uid, message.id);
+        setSbor(messageId, fresh);
+        return;
+      }
       fresh.left = fresh.left.filter((id) => id !== uid);
       fresh.reserve.push(uid);
+      trackPlus(fresh, uid, message.id);
       setSbor(messageId, fresh);
       await refreshPanel(message.client, messageId);
       return;
     }
 
     // "-"
-    const from = removeFromAll(fresh, uid);
-    if (from) {
-      if (!fresh.left.includes(uid)) fresh.left.push(uid);
+    if (signOutUser(fresh, uid)) {
       setSbor(messageId, fresh);
       await refreshPanel(message.client, messageId);
+    }
+  });
+}
+
+/** Удалил сообщение с + → выписать. */
+export async function onSborMessageDelete(message) {
+  try {
+    if (message.partial) await message.fetch().catch(() => null);
+  } catch {
+    /* partial ok */
+  }
+  const channel = message.channel;
+  if (!channel?.isThread?.()) return;
+  const found = findByThread(channel.id);
+  if (!found) return;
+
+  const { id: panelId } = found;
+  const msgId = String(message.id);
+
+  await withLock(`sbor:${panelId}`, async () => {
+    const fresh = getSbor(panelId);
+    if (!fresh) return;
+    ensureLists(fresh);
+
+    const uid = fresh.plusByMsg[msgId] || (message.author && !message.author.bot ? String(message.author.id) : null);
+    if (!uid) return;
+
+    // удалили свой плюс (или tracked msg)
+    const tracked = fresh.plusByMsg[msgId] || fresh.plusByUser[uid] === msgId;
+    const contentWasPlus = String(message.content || "").trim() === "+";
+    if (!tracked && !contentWasPlus) return;
+
+    if (signOutUser(fresh, uid)) {
+      setSbor(panelId, fresh);
+      await refreshPanel(message.client, panelId);
+    } else {
+      clearPlusTrack(fresh, uid);
+      setSbor(panelId, fresh);
+    }
+  });
+}
+
+/** Правка + → - (или убрал плюс из текста) → выписать. */
+export async function onSborMessageUpdate(oldMessage, newMessage) {
+  try {
+    if (oldMessage.partial) await oldMessage.fetch().catch(() => null);
+    if (newMessage.partial) await newMessage.fetch().catch(() => null);
+  } catch {
+    /* ignore */
+  }
+  if (!newMessage.guild || newMessage.author?.bot) return;
+  if (!newMessage.channel?.isThread?.()) return;
+
+  const found = findByThread(newMessage.channel.id);
+  if (!found) return;
+
+  const oldText = String(oldMessage.content || "").trim();
+  const newText = String(newMessage.content || "").trim();
+  if (oldText === newText) return;
+
+  const { id: panelId } = found;
+  const uid = String(newMessage.author.id);
+
+  await withLock(`sbor:${panelId}`, async () => {
+    const fresh = getSbor(panelId);
+    if (!fresh) return;
+    ensureLists(fresh);
+
+    const wasPlus =
+      oldText === "+" ||
+      fresh.plusByMsg[String(newMessage.id)] === uid ||
+      fresh.plusByUser[uid] === String(newMessage.id);
+
+    // + → - или просто убрал +
+    if (wasPlus && newText !== "+") {
+      if (signOutUser(fresh, uid)) {
+        setSbor(panelId, fresh);
+        await refreshPanel(newMessage.client, panelId);
+      }
+      return;
+    }
+
+    // что угодно → +
+    if (newText === "+") {
+      if (!fresh.open) return;
+      if (!(fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid))) {
+        fresh.left = fresh.left.filter((id) => id !== uid);
+        fresh.reserve.push(uid);
+      }
+      trackPlus(fresh, uid, newMessage.id);
+      setSbor(panelId, fresh);
+      await refreshPanel(newMessage.client, panelId);
     }
   });
 }

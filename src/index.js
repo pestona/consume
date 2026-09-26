@@ -24,6 +24,8 @@ import {
   handleSborCommand,
   handleSborInteraction,
   onSborMessage,
+  onSborMessageDelete,
+  onSborMessageUpdate,
   onSborReaction,
 } from "./sbor.js";
 import { onMemberRemove } from "./modLogs.js";
@@ -120,6 +122,16 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.MessageCreate, (message) => {
   trackMessageActivity(message);
   onSborMessage(message).catch((err) => logJson("ERROR", "sbor message", { error: String(err) }));
+});
+
+client.on(Events.MessageDelete, (message) => {
+  onSborMessageDelete(message).catch((err) => logJson("ERROR", "sbor delete", { error: String(err) }));
+});
+
+client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+  onSborMessageUpdate(oldMessage, newMessage).catch((err) =>
+    logJson("ERROR", "sbor edit", { error: String(err) }),
+  );
 });
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
