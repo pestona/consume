@@ -151,7 +151,8 @@ function hubPayload(guild) {
     `Выбери раздел — у каждого своя настройка.\n\n` +
     `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
     `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
-    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи`;
+    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
+    `Сборы: команда **/сбор**`;
 
   return v2Message("Админка Consume", body, [
     new ActionRowBuilder().addComponents(

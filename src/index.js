@@ -1,5 +1,6 @@
 import "dotenv/config";
 import {
+  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
@@ -20,6 +21,12 @@ import { handleAutoparkInteraction, autoparkExpireLoop } from "./autopark.js";
 import { handleSpamInteraction } from "./spam.js";
 import { handleTempVoiceInteraction, onTempVoiceState } from "./tempVoice.js";
 import { handleArchiveInteraction } from "./archive.js";
+import {
+  handleSborCommand,
+  handleSborInteraction,
+  onSborMessage,
+  onSborReaction,
+} from "./sbor.js";
 import { onMemberRemove } from "./modLogs.js";
 import { onAntinukeChannelDelete } from "./antinuke.js";
 import { logBotAction, startHealthServerIfNeeded } from "./schedulers.js";
@@ -49,6 +56,55 @@ function buildCommands() {
       .setName("panel")
       .setDescription("Панель управления Consume: публикация и привязки ролей/каналов")
       .setDMPermission(false),
+    new SlashCommandBuilder()
+      .setName("sbor")
+      .setNameLocalizations({ ru: "сбор" })
+      .setDescription("Создать сбор / мероприятие с записью через + в ветке")
+      .setDMPermission(false)
+      .addStringOption((o) =>
+        o
+          .setName("date")
+          .setNameLocalizations({ ru: "дата" })
+          .setDescription("Дата (например 26.09.2026)")
+          .setRequired(true),
+      )
+      .addStringOption((o) =>
+        o
+          .setName("time")
+          .setNameLocalizations({ ru: "время" })
+          .setDescription("Время МСК (например 14:11)")
+          .setRequired(true),
+      )
+      .addRoleOption((o) =>
+        o
+          .setName("role")
+          .setNameLocalizations({ ru: "роль" })
+          .setDescription("Роль для пинга / ЛС")
+          .setRequired(true),
+      )
+      .addIntegerOption((o) =>
+        o
+          .setName("main")
+          .setNameLocalizations({ ru: "основа" })
+          .setDescription("Слотов в основе (по умолчанию 10)")
+          .setMinValue(1)
+          .setMaxValue(50),
+      )
+      .addIntegerOption((o) =>
+        o
+          .setName("subs")
+          .setNameLocalizations({ ru: "замены" })
+          .setDescription("Слотов запасных (по умолчанию 6)")
+          .setMinValue(0)
+          .setMaxValue(50),
+      )
+      .addChannelOption((o) =>
+        o
+          .setName("channel")
+          .setNameLocalizations({ ru: "канал" })
+          .setDescription("Куда отправить сбор (по умолчанию — текущий)")
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+      ),
   ].map((c) => c.toJSON());
 }
 
@@ -85,6 +141,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.MessageCreate, (message) => {
   trackMessageActivity(message);
+  onSborMessage(message).catch((err) => logJson("ERROR", "sbor message", { error: String(err) }));
 });
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -113,8 +170,19 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (reaction.partial) await reaction.fetch().catch(() => null);
     if (user.partial) await user.fetch().catch(() => null);
     trackReactionActivity(reaction, user);
+    await onSborReaction(reaction, user, true);
   } catch (err) {
     logJson("ERROR", "reaction activity", { error: String(err) });
+  }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  try {
+    if (reaction.partial) await reaction.fetch().catch(() => null);
+    if (user.partial) await user.fetch().catch(() => null);
+    await onSborReaction(reaction, user, false);
+  } catch (err) {
+    logJson("ERROR", "reaction remove", { error: String(err) });
   }
 });
 
@@ -123,6 +191,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand() && interaction.commandName === "panel") {
       await handlePanelCommand(interaction);
+      return;
+    }
+    if (interaction.isChatInputCommand() && (interaction.commandName === "sbor" || interaction.commandName === "сбор")) {
+      await handleSborCommand(interaction);
       return;
     }
 
@@ -134,6 +206,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       handleTicketInteraction,
       handleMapsInteraction,
       handleKontraktInteraction,
+      handleSborInteraction,
       handleAutoparkInteraction,
       handleSpamInteraction,
     ];
