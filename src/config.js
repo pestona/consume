@@ -17,6 +17,7 @@ export function defaultConfig() {
     leaveLogPingRoleId: null,
     leaveLogTrackRoleIds: [],
     leaveLogIncludeNoRoles: true,
+    sborAccessRoleIds: [],
     familyRoleIds: [],
     tempVoiceCreateChannelId: null,
     tempVoiceCategoryId: null,

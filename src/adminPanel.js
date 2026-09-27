@@ -151,7 +151,8 @@ function hubPayload(guild) {
     `Выбери раздел — у каждого своя настройка.\n\n` +
     `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
     `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
-    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
+    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.sborAccessRoleIds?.length || cfg.moderatorRoleIds?.length)} сбор\n` +
+    `${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
     `Сборы: команда **/сбор**`;
 
   return v2Message("Админка Consume", body, [
@@ -172,6 +173,7 @@ function hubPayload(guild) {
     new ActionRowBuilder().addComponents(
       btn("c:adm:tab:summary", "Сводка", "📊"),
       btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
+      btn("c:adm:tab:sbor", "Доступ", "🔑"),
     ),
   ]);
 }
@@ -358,6 +360,22 @@ function topicStatus(guild, tab, ui) {
       placeholder: "Кто модератор бота?",
     };
   }
+  if (tab === "sbor") {
+    const access = cfg.sborAccessRoleIds?.length
+      ? mentionRoles(cfg.sborAccessRoleIds)
+      : "как у модераторов бота";
+    return {
+      title: "Доступ к сбору",
+      body:
+        `Роли **/сбор**: ${access}\n\n` +
+        "Кто может создавать сбор, жать кнопки и ставить ✅/🔥.\n" +
+        "Пустой выбор = как роли модераторов бота. Владелец / Manage Server — всегда.",
+      options: [
+        { label: "Роли доступа к сбору", value: "r:sboraccess", emoji: "🔑", description: "Кто может /сбор" },
+      ],
+      placeholder: "Что настроить?",
+    };
+  }
   if (tab === "protect") {
     const on = cfg.antinukeEnabled !== false;
     const users = (cfg.antinukeWhitelistUserIds || []).map((id) => `<@${id}>`).join(" ") || "—";
@@ -396,7 +414,8 @@ function topicStatus(guild, tab, ui) {
       title: "Сводка привязок",
       body:
         `**Модераторы**\n` +
-        `Модераторы бота: ${roleOrEmpty(cfg.moderatorRoleIds)}\n\n` +
+        `Модераторы бота: ${roleOrEmpty(cfg.moderatorRoleIds)}\n` +
+        `Доступ к сбору: ${roleOrEmpty(cfg.sborAccessRoleIds) || "как модераторы"}\n\n` +
         `**Заявки**\n` +
         `Категория: ${fmtCh(cfg.ticketCategoryId)}\n` +
         `Стафф: ${roleOrEmpty(cfg.ticketStaffRoleIds)}\n` +
@@ -474,6 +493,7 @@ function topicPayload(guild, tab, ui) {
 
 const PICK_META = {
   "r:mod": { kind: "role", selectId: "c:cfg:r:mod", title: "Модераторы бота", max: 25, key: "moderatorRoleIds" },
+  "r:sboraccess": { kind: "role", selectId: "c:cfg:r:sboraccess", title: "Доступ к /сбор", max: 25, key: "sborAccessRoleIds" },
   "r:staff": { kind: "role", selectId: "c:cfg:r:staff", title: "Стафф тикетов", max: 25, key: "ticketStaffRoleIds" },
   "r:tping": { kind: "role", selectId: "c:cfg:r:tping", title: "Пинг новой заявки", max: 25, key: "ticketPingRoleIds" },
   "r:acad": { kind: "role", selectId: "c:cfg:r:acad", title: "Роли академии", max: 25, key: "acceptRoleIdsAcademy" },
@@ -722,6 +742,7 @@ const ROLE_PATCH = {
   "c:cfg:r:acad": (v) => ({ acceptRoleIdsAcademy: v }),
   "c:cfg:r:main": (v) => ({ acceptRoleIdsMain: v }),
   "c:cfg:r:mod": (v) => ({ moderatorRoleIds: v }),
+  "c:cfg:r:sboraccess": (v) => ({ sborAccessRoleIds: v }),
   "c:cfg:r:spam": (v) => ({ spamCommandRoleIds: v }),
   "c:cfg:r:apmgr": (v) => ({ autoparkManagerRoleIds: v }),
   "c:cfg:r:kpost": (v) => ({ kontraktPostRoleIds: v }),
@@ -761,6 +782,7 @@ const CFG_LABELS = {
   "c:cfg:r:acad": "Роли академии",
   "c:cfg:r:main": "Роли основы",
   "c:cfg:r:mod": "Модераторы бота",
+  "c:cfg:r:sboraccess": "Доступ к /сбор",
   "c:cfg:r:spam": "Кто может спамить",
   "c:cfg:r:apmgr": "Менеджеры автопарка",
   "c:cfg:r:kpost": "Публикация контрактов",
@@ -805,6 +827,7 @@ const MENU_LABELS = {
   "spam:to": "Запустить спам",
   "c:log": "Канал логов",
   "r:mod": "Роли модераторов",
+  "r:sboraccess": "Роли доступа к сбору",
   "t:rpacc": "Вкл/выкл приём РП",
   "t:vzpacc": "Вкл/выкл приём VZP",
   "r:family": "Роли семьи",
@@ -845,6 +868,7 @@ const TAB_LABELS = {
   spam: "Спам",
   logs: "Логи",
   mods: "Модераторы",
+  sbor: "Доступ",
   rooms: "Комнаты",
   archive: "Архив",
   protect: "Защита",
@@ -944,7 +968,7 @@ export async function handleAdminInteraction(interaction) {
         dm: "summary",
         family: "rooms",
       }[tabOpen[1]] || tabOpen[1];
-    if (["cars", "logs", "kontr", "mods", "rooms", "archive", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
+    if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
     }

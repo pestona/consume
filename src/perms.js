@@ -19,6 +19,24 @@ export async function canModerate(interaction) {
   return canOpenPanel(interaction);
 }
 
+/** Кто может /сбор и управлять сборами. Пустой список = как модераторы бота. */
+export async function canUseSbor(interaction) {
+  const member = await resolveMember(interaction);
+  if (!member) return false;
+  if (isGuildManager(member)) return true;
+  const cfg = getConfig(interaction.guildId);
+  const ids = cfg.sborAccessRoleIds?.length ? cfg.sborAccessRoleIds : cfg.moderatorRoleIds;
+  return hasAnyRole(member, ids);
+}
+
+export function memberCanUseSbor(member, guildId) {
+  if (!member) return false;
+  if (isGuildManager(member)) return true;
+  const cfg = getConfig(guildId);
+  const ids = cfg.sborAccessRoleIds?.length ? cfg.sborAccessRoleIds : cfg.moderatorRoleIds;
+  return hasAnyRole(member, ids);
+}
+
 export async function canHandleTicket(interaction) {
   const member = await resolveMember(interaction);
   if (!member) return false;

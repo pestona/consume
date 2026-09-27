@@ -6,13 +6,10 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import { kvGet, kvSet, getSbor, setSbor, getAllSbors } from "./db.js";
-import { getConfig } from "./config.js";
-import { canModerate } from "./perms.js";
+import { canUseSbor, memberCanUseSbor } from "./perms.js";
 import {
   COLOR_GREEN,
   COLOR_RED,
-  hasAnyRole,
-  isGuildManager,
   logJson,
   resolveMember,
   safeDm,
@@ -316,15 +313,13 @@ async function threadSend(client, state, content, opts = {}) {
 
 async function canManageSbor(interaction, state) {
   if (String(interaction.user.id) === String(state.organizerId)) return true;
-  return canModerate(interaction);
+  return canUseSbor(interaction);
 }
 
 async function memberCanMod(member, guild, state) {
   if (!member) return false;
   if (String(member.id) === String(state.organizerId)) return true;
-  if (isGuildManager(member)) return true;
-  const cfg = getConfig(guild.id);
-  return hasAnyRole(member, cfg.moderatorRoleIds);
+  return memberCanUseSbor(member, guild.id);
 }
 
 async function collectDmTargets(guild, state) {
@@ -363,7 +358,7 @@ export async function handleSborCommand(interaction) {
     await safeReply(interaction, "Только на сервере.");
     return;
   }
-  if (!(await canModerate(interaction))) {
+  if (!(await canUseSbor(interaction))) {
     await safeReply(interaction, "Нет прав создавать сбор.");
     return;
   }
