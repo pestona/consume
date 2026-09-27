@@ -90,6 +90,12 @@ function buildCommands() {
 
 async function syncCommands(readyClient) {
   const body = buildCommands();
+  // Глобальные сбрасываем — иначе /panel и /сбор двоятся (guild + global).
+  try {
+    await readyClient.application.commands.set([]);
+  } catch (err) {
+    logJson("ERROR", "Не удалось сбросить глобальные команды", { error: String(err) });
+  }
   let guildOk = 0;
   for (const guild of readyClient.guilds.cache.values()) {
     try {
@@ -102,12 +108,7 @@ async function syncCommands(readyClient) {
       });
     }
   }
-  try {
-    await readyClient.application.commands.set(body);
-  } catch (err) {
-    logJson("ERROR", "Не удалось синхронизировать глобальные команды", { error: String(err) });
-  }
-  logJson("INFO", "Команды синхронизированы", {
+  logJson("INFO", "Команды синхронизированы (только сервер)", {
     guilds: guildOk,
     names: body.map((c) => c.name),
   });
