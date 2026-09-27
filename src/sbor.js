@@ -210,7 +210,7 @@ function buildEmbed(state) {
       inline: true,
     },
     {
-      name: `Замены (${state.subs.length}/${state.subLimit})`,
+      name: `Замены (${state.subs.length})`,
       value: listMentions(state.subs),
       inline: true,
     },
@@ -366,7 +366,6 @@ export async function handleSborCommand(interaction) {
   const whenStr = interaction.options.getString("when", true);
   const dmRole = interaction.options.getRole("role", true);
   const mainLimit = interaction.options.getInteger("main", true);
-  const subLimit = 6;
   const pingEveryone = String(dmRole.id) === String(interaction.guildId);
   const channel =
     interaction.channel?.isTextBased?.() && !interaction.channel.isThread?.()
@@ -400,7 +399,7 @@ export async function handleSborCommand(interaction) {
     eventNo,
     startsAt: startsAt.getTime(),
     mainLimit: Math.min(50, Math.max(1, mainLimit)),
-    subLimit,
+    subLimit: 0, // 0 = без лимита
     open: true,
     main: [],
     subs: [],
@@ -761,14 +760,12 @@ export async function onSborReaction(reaction, user, added) {
 
     if (emoji === REACT_MAIN) {
       if (state.main.length >= state.mainLimit) {
-        if (state.subs.length < state.subLimit) state.subs.push(targetId);
-        else state.reserve.push(targetId);
+        state.subs.push(targetId);
       } else {
         state.main.push(targetId);
       }
     } else if (emoji === REACT_SUB) {
-      if (state.subs.length >= state.subLimit) state.reserve.push(targetId);
-      else state.subs.push(targetId);
+      state.subs.push(targetId);
     }
 
     setSbor(panelId, state);
