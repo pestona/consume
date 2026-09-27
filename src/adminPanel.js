@@ -145,91 +145,37 @@ function panelLine(cfg, key, label) {
   return `${label} → ${id ? `<#${id}>` : "ещё не публиковали"}`;
 }
 
-function setupChecklist(guild) {
-  const cfg = getConfig(guild.id);
-  const items = [
-    { ok: Boolean(cfg.moderatorRoleIds?.length), label: "Модераторы бота", tab: "mods" },
-    { ok: Boolean(cfg.ticketCategoryId), label: "Категория тикетов", tab: "apps" },
-    { ok: Boolean(cfg.ticketStaffRoleIds?.length), label: "Стафф тикетов", tab: "apps" },
-    { ok: Boolean(cfg.kontraktChannelId), label: "Канал контрактов", tab: "kontr" },
-    { ok: Boolean(cfg.tempVoiceCreateChannelId && cfg.tempVoiceCategoryId), label: "Временные комнаты", tab: "rooms" },
-    { ok: Boolean(cfg.familyRoleIds?.length), label: "Роли семьи", tab: "rooms" },
-    { ok: Boolean(cfg.archiveCategoryId), label: "Архив", tab: "archive" },
-    {
-      ok: Boolean(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId),
-      label: "Логи",
-      tab: "logs",
-    },
-  ];
-  const missing = items.filter((i) => !i.ok);
-  const lines = items.map((i) => `${i.ok ? "✅" : "❌"} ${i.label}`);
-  return { items, missing, lines, ready: missing.length === 0 };
-}
-
 function hubPayload(guild) {
-  const check = setupChecklist(guild);
-  const status = check.ready
-    ? "**Быстрый старт:** всё основное настроено ✅"
-    : `**Быстрый старт** — не готово: **${check.missing.length}**\n` +
-      check.missing.map((i) => `❌ ${i.label}`).join("\n");
-
+  const cfg = getConfig(guild.id);
   const body =
-    `${status}\n\n` +
-    `**Работа** — панели, приём заявок, спам, сводка (модерам).\n` +
-    `**Настройка** — роли, каналы, защита (Manage Server).\n\n` +
-    `Сборы: **/сбор**`;
+    `Выбери раздел — у каждого своя настройка.\n\n` +
+    `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
+    `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
+    `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.sborAccessRoleIds?.length || cfg.moderatorRoleIds?.length)} сбор\n` +
+    `${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
+    `Сборы: команда **/сбор**`;
 
   return v2Message("Админка Consume", body, [
     new ActionRowBuilder().addComponents(
-      btn("c:adm:mode:work", "Работа", "🛠️", ButtonStyle.Primary),
-      btn("c:adm:mode:setup", "Настройка", "⚙️", ButtonStyle.Secondary),
-      btn("c:adm:hub:refresh", "Обновить", "🔄", ButtonStyle.Secondary),
-    ),
-  ]);
-}
-
-function workMenuPayload() {
-  return v2Message(
-    "Работа",
-    "Ежедневные действия. Настройки каналов/ролей — в **Настройка**.",
-    [
-      new ActionRowBuilder().addComponents(
-        btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
-        btn("c:adm:tab:apps", "Заявки", "🎫"),
-        btn("c:adm:tab:spam", "Спам", "📣", ButtonStyle.Danger),
-      ),
-      new ActionRowBuilder().addComponents(
-        btn("c:adm:tab:summary", "Сводка", "📊"),
-        btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
-        btn("c:adm:hub:home", "← Хаб", null, ButtonStyle.Secondary),
-      ),
-    ],
-    { ephemeral: true },
-  );
-}
-
-function setupMenuPayload(guild) {
-  const check = setupChecklist(guild);
-  const body =
-    (check.ready ? "Основное настроено.\n\n" : `Ещё красного: **${check.missing.length}**\n${check.lines.join("\n")}\n\n`) +
-    "Привязки ролей и каналов. Нужен **Manage Server** / владелец.";
-
-  return v2Message("Настройка", body, [
-    new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:mods", "Модераторы", "🛡️"),
-      btn("c:adm:tab:sbor", "Сбор", "📋"),
-      btn("c:adm:tab:logs", "Логи", "📋"),
+      btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
       btn("c:adm:tab:apps", "Заявки", "🎫"),
       btn("c:adm:tab:cars", "Машины", "🚗"),
+      btn("c:adm:tab:kontr", "Контракты", "📜"),
+      btn("c:adm:tab:spam", "Спам", "📣", ButtonStyle.Danger),
     ),
     new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:kontr", "Контракты", "📜"),
+      btn("c:adm:tab:logs", "Логи", "📋"),
+      btn("c:adm:tab:mods", "Модераторы", "🛡️"),
       btn("c:adm:tab:rooms", "Комнаты", "🔊"),
       btn("c:adm:tab:archive", "Архив", "📁"),
       btn("c:adm:tab:protect", "Защита", "🚨", ButtonStyle.Danger),
-      btn("c:adm:hub:home", "← Хаб", null, ButtonStyle.Secondary),
     ),
-  ], { ephemeral: true });
+    new ActionRowBuilder().addComponents(
+      btn("c:adm:tab:summary", "Сводка", "📊"),
+      btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
+      btn("c:adm:tab:sbor", "Доступ", "🔑"),
+    ),
+  ]);
 }
 
 function topicStatus(guild, tab, ui) {
@@ -409,17 +355,8 @@ function topicStatus(guild, tab, ui) {
       title: "Модераторы бота",
       body:
         `Сейчас: ${mentionRoles(cfg.moderatorRoleIds) || "не заданы"}\n\n` +
-        "Кто открывает админку (кроме владельца и Manage Server).\n" +
-        "Пресет копирует этих модеров в стафф тикетов и доступ к **/сбор**.",
-      options: [
-        { label: "Роли модераторов", value: "r:mod", emoji: "🛡️", description: "Доступ к панели" },
-        {
-          label: "Пресет: моды → стафф + сбор",
-          value: "t:presetstaff",
-          emoji: "📦",
-          description: "Скопировать модов в тикеты и сбор",
-        },
-      ],
+        "Кто может открывать админку (кроме владельца и Manage Server).",
+      options: [{ label: "Роли модераторов", value: "r:mod", emoji: "🛡️", description: "Доступ к панели" }],
       placeholder: "Кто модератор бота?",
     };
   }
@@ -428,15 +365,15 @@ function topicStatus(guild, tab, ui) {
       ? mentionRoles(cfg.sborAccessRoleIds)
       : "как у модераторов бота";
     return {
-      title: "Сбор",
+      title: "Доступ к сбору",
       body:
         `Роли **/сбор**: ${access}\n\n` +
-        "Кто создаёт сбор, жмёт кнопки и ставит ✅/🔥.\n" +
-        "Пустой выбор = как роли модераторов бота.",
+        "Кто может создавать сбор, жать кнопки и ставить ✅/🔥.\n" +
+        "Пустой выбор = как роли модераторов бота. Владелец / Manage Server — всегда.",
       options: [
         { label: "Роли доступа к сбору", value: "r:sboraccess", emoji: "🔑", description: "Кто может /сбор" },
       ],
-      placeholder: "Что настроить в сборе?",
+      placeholder: "Что настроить?",
     };
   }
   if (tab === "protect") {
@@ -551,12 +488,6 @@ function topicPayload(guild, tab, ui) {
       );
     rows.push(new ActionRowBuilder().addComponents(select));
   }
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      btn("c:adm:mode:work", "← Работа", null, ButtonStyle.Secondary),
-      btn("c:adm:mode:setup", "← Настройка", null, ButtonStyle.Secondary),
-    ),
-  );
   return v2Message(t.title, t.body, rows, { ephemeral: true });
 }
 
@@ -703,21 +634,8 @@ async function editHub(interaction) {
 async function openTopic(interaction, tab) {
   const ui = uiSet(interaction, { tab });
   const payload = topicPayload(interaction.guild, tab, ui);
-  try {
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(payload);
-    } else if (interaction.message?.flags?.has?.(MessageFlags.Ephemeral)) {
-      await interaction.update(payload);
-    } else {
-      await interaction.reply(payload);
-    }
-  } catch {
-    try {
-      await interaction.reply(payload);
-    } catch {
-      await interaction.followUp(payload).catch(() => null);
-    }
-  }
+  if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
+  else await interaction.reply(payload);
 }
 
 async function refreshTopic(interaction, tab) {
@@ -910,7 +828,6 @@ const MENU_LABELS = {
   "c:log": "Канал логов",
   "r:mod": "Роли модераторов",
   "r:sboraccess": "Роли доступа к сбору",
-  "t:presetstaff": "Пресет моды → стафф + сбор",
   "t:rpacc": "Вкл/выкл приём РП",
   "t:vzpacc": "Вкл/выкл приём VZP",
   "r:family": "Роли семьи",
@@ -951,7 +868,7 @@ const TAB_LABELS = {
   spam: "Спам",
   logs: "Логи",
   mods: "Модераторы",
-  sbor: "Сбор",
+  sbor: "Доступ",
   rooms: "Комнаты",
   archive: "Архив",
   protect: "Защита",
@@ -1037,66 +954,6 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
 
-  if (interaction.isButton() && id === "c:adm:hub:refresh") {
-    await editHub(interaction);
-    const payload = hubPayload(interaction.guild);
-    try {
-      await interaction.update(payload);
-    } catch {
-      await safeReply(interaction, "Хаб обновлён.");
-    }
-    return true;
-  }
-
-  if (interaction.isButton() && id === "c:adm:hub:home") {
-    // Из ephemeral нельзя вернуть публичный хаб — показываем меню режимов
-    const payload = workMenuPayload();
-    try {
-      await interaction.update(
-        v2Message(
-          "Админка",
-          "Выбери режим снова (публичный хаб обнови кнопкой **Обновить** на сообщении панели).",
-          [
-            new ActionRowBuilder().addComponents(
-              btn("c:adm:mode:work", "Работа", "🛠️", ButtonStyle.Primary),
-              btn("c:adm:mode:setup", "Настройка", "⚙️", ButtonStyle.Secondary),
-            ),
-          ],
-          { ephemeral: true },
-        ),
-      );
-    } catch {
-      await interaction.followUp(payload).catch(() => null);
-    }
-    return true;
-  }
-
-  if (interaction.isButton() && id === "c:adm:mode:work") {
-    const payload = workMenuPayload();
-    try {
-      if (interaction.message?.flags?.has?.(MessageFlags.Ephemeral)) await interaction.update(payload);
-      else await interaction.reply(payload);
-    } catch {
-      await interaction.followUp(payload).catch(() => null);
-    }
-    return true;
-  }
-
-  if (interaction.isButton() && id === "c:adm:mode:setup") {
-    if (!(await canEditSettings(interaction))) {
-      await safeReply(interaction, "Настройки может менять только владелец или Manage Server.");
-      return true;
-    }
-    const payload = setupMenuPayload(interaction.guild);
-    try {
-      if (interaction.message?.flags?.has?.(MessageFlags.Ephemeral)) await interaction.update(payload);
-      else await interaction.reply(payload);
-    } catch {
-      await interaction.followUp(payload).catch(() => null);
-    }
-    return true;
-  }
-
   const tabOpen = id.match(/^c:adm:tab:(.+)$/);
   if (interaction.isButton() && tabOpen) {
     if (tabOpen[1] === "stats") return false;
@@ -1110,7 +967,6 @@ export async function handleAdminInteraction(interaction) {
         daily: "summary",
         dm: "summary",
         family: "rooms",
-        access: "sbor",
       }[tabOpen[1]] || tabOpen[1];
     if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
@@ -1197,28 +1053,6 @@ export async function handleAdminInteraction(interaction) {
     }
     if (value === "t:refresh") {
       await refreshTopic(interaction, tab);
-      return true;
-    }
-    if (value === "t:presetstaff") {
-      if (!(await canEditSettings(interaction))) {
-        await safeReply(interaction, "Пресет может применять только владелец или Manage Server.");
-        return true;
-      }
-      const cfg = getConfig(interaction.guildId);
-      const mods = (cfg.moderatorRoleIds || []).map(String);
-      if (!mods.length) {
-        await safeReply(interaction, "Сначала задай роли модераторов бота.");
-        return true;
-      }
-      setConfig(interaction.guildId, {
-        ticketStaffRoleIds: mods,
-        sborAccessRoleIds: mods,
-      });
-      logAdminChange(interaction, "Админка: пресет ролей", [
-        `Скопировал модеров → стафф тикетов и доступ к сбору: ${mentionRoles(mods)}`,
-      ]).catch(() => null);
-      await refreshTopic(interaction, "mods");
-      editHub(interaction).catch(() => null);
       return true;
     }
     if (value === "t:rpacc" || value === "t:vzpacc") {
