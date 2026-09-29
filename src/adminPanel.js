@@ -31,6 +31,7 @@ import {
 import { buildAutoparkEmbed, autoparkPanelRows, registerPanel } from "./autopark.js";
 import { tempVoicePanelPayload } from "./tempVoice.js";
 import { buildArchivePublicPanel } from "./archive.js";
+import { afkPanelPayload, registerAfkPanel } from "./afk.js";
 import { createChannelBackup, getChannelBackupMeta, restoreChannelBackup } from "./channelBackup.js";
 import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
 import { logAdminChange } from "./schedulers.js";
@@ -174,6 +175,7 @@ function hubPayload(guild) {
       btn("c:adm:tab:summary", "Сводка", "📊"),
       btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
       btn("c:adm:tab:sbor", "Доступ", "🔑"),
+      btn("c:adm:tab:afk", "AFK", "😴"),
     ),
   ]);
 }
@@ -192,6 +194,7 @@ function topicStatus(guild, tab, ui) {
         `${panelLine(cfg, "autopark", "Машины")}\n` +
         `${panelLine(cfg, "voice", "Комнаты")}\n` +
         `${panelLine(cfg, "archive", "Архив")}\n` +
+        `${panelLine(cfg, "afk", "AFK / Инактив")}\n` +
         `${panelLine(cfg, "control", "Админка")}\n\n` +
         "Сначала панель — потом канал только для неё.",
       options: [
@@ -201,6 +204,7 @@ function topicStatus(guild, tab, ui) {
         { label: "Панель автопарка", value: "pub:ap", emoji: "🚗", description: "Куда отправить" },
         { label: "Панель комнат", value: "pub:voice", emoji: "🔊", description: "Управление войсами" },
         { label: "Панель архива", value: "pub:archive", emoji: "📁", description: "Создание каналов" },
+        { label: "Панель AFK / Инактив", value: "pub:afk", emoji: "😴", description: "Куда отправить" },
         { label: "Эту админку", value: "pub:control", emoji: "📋", description: "Куда отправить" },
       ],
       placeholder: "Какую панель отправить?",
@@ -350,6 +354,22 @@ function topicStatus(guild, tab, ui) {
       placeholder: "Выбрать что настроить",
     };
   }
+  if (tab === "afk") {
+    return {
+      title: "AFK / Инактив",
+      body:
+        `Роль инактива: ${cfg.afkInactiveRoleId ? `<@&${cfg.afkInactiveRoleId}>` : "❌ не задана"}\n` +
+        `${panelLine(cfg, "afk", "Панель")}\n\n` +
+        "**AFK** — только список, роли и ник не трогаем.\n" +
+        "**Инактив** — снимаем роли, выдаём роль инактива, ник → дата окончания.\n" +
+        "По выходу / по сроку — роли и ник возвращаются.\n\n" +
+        "Панель: **/panel → Панели → AFK / Инактив**.",
+      options: [
+        { label: "Роль инактива", value: "r:afkinact", emoji: "😴", description: "Единственная роль на время инактива" },
+      ],
+      placeholder: "Что настроить?",
+    };
+  }
   if (tab === "mods") {
     return {
       title: "Модераторы бота",
@@ -449,6 +469,8 @@ function topicStatus(guild, tab, ui) {
         `Модераторы: ${roleOrEmpty(cfg.archiveModRoleIds) || "как у тикетов"}\n` +
         `Тиры: ${[cfg.archiveTier1RoleId, cfg.archiveTier2RoleId, cfg.archiveTier3RoleId].filter(Boolean).map((id) => `<@&${id}>`).join(" ") || "—"}\n` +
         `Ранги: ${cfg.archiveRankChainRoleIds?.length ? roleOrEmpty(cfg.archiveRankChainRoleIds) : [cfg.archiveRankLowRoleId, cfg.archiveRankHighRoleId].filter(Boolean).map((id) => `<@&${id}>`).join(" ") || "—"}\n\n` +
+        `**AFK / Инактив**\n` +
+        `Роль инактива: ${cfg.afkInactiveRoleId ? `<@&${cfg.afkInactiveRoleId}>` : "—"}\n\n` +
         `**Защита**\n` +
         `Статус: ${cfg.antinukeEnabled === false ? "ВЫКЛ" : "ВКЛ"}\n` +
         `Баны: ${cfg.antinukeBanLimit || 10} / ${cfg.antinukeBanWindowSec || 60} сек\n` +
@@ -462,6 +484,7 @@ function topicStatus(guild, tab, ui) {
         `${panelLine(cfg, "autopark", "Машины")}\n` +
         `${panelLine(cfg, "voice", "Комнаты")}\n` +
         `${panelLine(cfg, "archive", "Архив")}\n` +
+        `${panelLine(cfg, "afk", "AFK / Инактив")}\n` +
         `${panelLine(cfg, "control", "Админка")}`,
       options: [{ label: "Обновить сводку", value: "t:refresh", emoji: "🔄", description: "Перечитать привязки" }],
       placeholder: "Обновить сводку",
@@ -547,6 +570,7 @@ const PICK_META = {
   "r:archlow": { kind: "role", selectId: "c:cfg:r:archlow", title: "Низкий ранг", max: 1, key: "archiveRankLowRoleId", single: true },
   "r:archhigh": { kind: "role", selectId: "c:cfg:r:archhigh", title: "Высокий ранг", max: 1, key: "archiveRankHighRoleId", single: true },
   "r:archchain": { kind: "role", selectId: "c:cfg:r:archchain", title: "Цепочка рангов (низ → верх)", max: 25, key: "archiveRankChainRoleIds" },
+  "r:afkinact": { kind: "role", selectId: "c:cfg:r:afkinact", title: "Роль инактива", max: 1, key: "afkInactiveRoleId", single: true },
 };
 
 const PANEL_LABELS = {
@@ -556,6 +580,7 @@ const PANEL_LABELS = {
   ap: "Автопарк",
   voice: "Комнаты",
   archive: "Архив",
+  afk: "AFK / Инактив",
   control: "Админка",
 };
 
@@ -759,6 +784,7 @@ const ROLE_PATCH = {
   "c:cfg:r:archlow": (v) => ({ archiveRankLowRoleId: v[0] || null }),
   "c:cfg:r:archhigh": (v) => ({ archiveRankHighRoleId: v[0] || null }),
   "c:cfg:r:archchain": (v) => ({ archiveRankChainRoleIds: v }),
+  "c:cfg:r:afkinact": (v) => ({ afkInactiveRoleId: v[0] || null }),
 };
 
 const USER_PATCH = {
@@ -808,6 +834,7 @@ const CFG_LABELS = {
   "c:cfg:r:archlow": "Низкий ранг",
   "c:cfg:r:archhigh": "Высокий ранг",
   "c:cfg:r:archchain": "Цепочка рангов",
+  "c:cfg:r:afkinact": "Роль инактива",
 };
 
 const MENU_LABELS = {
@@ -849,6 +876,7 @@ const MENU_LABELS = {
   "pub:ap": "Отправить панель автопарка",
   "pub:voice": "Отправить панель комнат",
   "pub:archive": "Отправить панель архива",
+  "pub:afk": "Отправить панель AFK / Инактив",
   "pub:control": "Отправить админку",
   "c:archcat": "Категория архива",
   "r:archmod": "Модераторы архива",
@@ -858,6 +886,7 @@ const MENU_LABELS = {
   "r:archlow": "Низкий ранг",
   "r:archhigh": "Высокий ранг",
   "r:archchain": "Цепочка рангов",
+  "r:afkinact": "Роль инактива",
 };
 
 const TAB_LABELS = {
@@ -871,6 +900,7 @@ const TAB_LABELS = {
   sbor: "Доступ",
   rooms: "Комнаты",
   archive: "Архив",
+  afk: "AFK / Инактив",
   protect: "Защита",
   summary: "Сводка",
   home: "Сводка",
@@ -930,6 +960,10 @@ async function publishTo(interaction, kind, channel) {
     } else if (kind === "archive") {
       await ch.send(buildArchivePublicPanel());
       rememberPanelChannel(interaction.guild.id, "archive", ch.id);
+    } else if (kind === "afk") {
+      const msg = await ch.send(afkPanelPayload(interaction.guild.id));
+      registerAfkPanel(interaction.guild.id, ch.id, msg.id);
+      rememberPanelChannel(interaction.guild.id, "afk", ch.id);
     } else if (kind === "control") {
       const payload = hubPayload(interaction.guild);
       const msg = await ch.send(payload);
@@ -968,7 +1002,7 @@ export async function handleAdminInteraction(interaction) {
         dm: "summary",
         family: "rooms",
       }[tabOpen[1]] || tabOpen[1];
-    if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
+    if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "afk", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
     }

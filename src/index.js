@@ -21,6 +21,11 @@ import { handleSpamInteraction } from "./spam.js";
 import { handleTempVoiceInteraction, onTempVoiceState } from "./tempVoice.js";
 import { handleArchiveInteraction } from "./archive.js";
 import {
+  handleAfkInteraction,
+  afkExpireLoop,
+  onAfkMemberRemove,
+} from "./afk.js";
+import {
   handleSborCommand,
   handleSborInteraction,
   onSborMessage,
@@ -117,6 +122,7 @@ async function syncCommands(readyClient) {
 client.once(Events.ClientReady, async (readyClient) => {
   await syncCommands(readyClient);
   autoparkExpireLoop(readyClient).catch((err) => logJson("ERROR", "autopark loop", { error: String(err) }));
+  afkExpireLoop(readyClient).catch((err) => logJson("ERROR", "afk loop", { error: String(err) }));
   logJson("INFO", `Бот запущен: ${readyClient.user.tag} (${readyClient.user.id})`);
 });
 
@@ -148,6 +154,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
 client.on(Events.GuildMemberRemove, (member) => {
   onMemberRemove(member).catch((err) => logJson("ERROR", "leave log", { error: String(err) }));
+  onAfkMemberRemove(member).catch((err) => logJson("ERROR", "afk leave", { error: String(err) }));
 });
 
 client.on(Events.ChannelDelete, (channel) => {
@@ -192,6 +199,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const handlers = [
       handleTempVoiceInteraction,
       handleArchiveInteraction,
+      handleAfkInteraction,
       handleActivityAdmin,
       handleAdminInteraction,
       handleTicketInteraction,

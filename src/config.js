@@ -44,6 +44,7 @@ export function defaultConfig() {
     archiveRankLowRoleId: null,
     archiveRankHighRoleId: null,
     archiveRankChainRoleIds: [],
+    afkInactiveRoleId: null,
     publishChannelId: null,
     controlMessageId: null,
     panelChannels: {
@@ -54,6 +55,7 @@ export function defaultConfig() {
       autopark: null,
       voice: null,
       archive: null,
+      afk: null,
     },
   };
 }
