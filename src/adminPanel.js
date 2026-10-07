@@ -147,20 +147,6 @@ function panelLine(cfg, key, label) {
   return `${label} → ${id ? `<#${id}>` : "ещё не публиковали"}`;
 }
 
-function hubPayload(_guild, { ephemeral = false } = {}) {
-  return v2Message(
-    "Админка Consume",
-    "Выбери отдел. Пересылка панелей **не удаляет** прошлые сообщения — просто шлёт новую копию.",
-    [
-      new ActionRowBuilder().addComponents(
-        btn("c:adm:dept:5rp", "5рп", "5️⃣", ButtonStyle.Primary),
-        btn("c:adm:dept:nova", "Нова в нове", "🆕", ButtonStyle.Primary),
-      ),
-    ],
-    { ephemeral },
-  );
-}
-
 function deptSwitchAccessory(targetDept) {
   const toNova = targetDept === "nova";
   return new ButtonBuilder()
@@ -207,11 +193,10 @@ function dept5rpPayload(guild) {
         btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
         btn("c:adm:tab:sbor", "Доступ", "🔑"),
         btn("c:adm:tab:afk", "AFK", "😴"),
-        btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
       ),
     );
 
-  return { components: [container], flags: V2_EPH };
+  return { components: [container], flags: V2 };
 }
 
 function deptNovaPayload() {
@@ -230,11 +215,14 @@ function deptNovaPayload() {
     .addActionRowComponents(
       new ActionRowBuilder().addComponents(
         btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
-        btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
       ),
     );
 
-  return { components: [container], flags: V2_EPH };
+  return { components: [container], flags: V2 };
+}
+
+function hubPayload(guild) {
+  return dept5rpPayload(guild);
 }
 
 function topicStatus(guild, tab, ui) {
@@ -576,10 +564,8 @@ function topicPayload(guild, tab, ui) {
       );
     rows.push(new ActionRowBuilder().addComponents(select));
   }
-  const deptBack =
-    ui?.dept === "nova" ? "c:adm:dept:nova" : ui?.dept === "5rp" ? "c:adm:dept:5rp" : "c:adm:dept:home";
   rows.push(
-    new ActionRowBuilder().addComponents(btn(deptBack, "← Назад", null, ButtonStyle.Secondary)),
+    new ActionRowBuilder().addComponents(btn("c:adm:close", "Закрыть", null, ButtonStyle.Secondary)),
   );
   return v2Message(t.title, t.body, rows, { ephemeral: true });
 }
@@ -711,54 +697,31 @@ function dropPickPayload(guild, tab, value) {
   return v2Message(meta.title, "Выбери ниже. Пустой выбор = сброс.", [row, back], { ephemeral: true });
 }
 
-function isEphemeralMessage(interaction) {
-  try {
-    return Boolean(interaction.message?.flags?.has?.(MessageFlags.Ephemeral));
-  } catch {
-    return false;
-  }
-}
-
-async function openDept(interaction, dept, { update = false } = {}) {
+async function openDept(interaction, dept) {
   let payload;
   let ui;
-  const ephemeralCtx = isEphemeralMessage(interaction);
   if (dept === "nova") {
     ui = uiSet(interaction, { dept: "nova", tab: "panels" });
     payload = deptNovaPayload();
-  } else if (dept === "5rp") {
+  } else {
     ui = uiSet(interaction, { dept: "5rp", tab: "summary" });
     payload = dept5rpPayload(interaction.guild);
-  } else {
-    ui = uiSet(interaction, { dept: null, tab: "home" });
-    // Из ephemeral-меню возвращаемся ephemeral-корнем, публичное сообщение админки не трогаем.
-    payload = hubPayload(interaction.guild, { ephemeral: true });
   }
-  // Публичную панель отделов никогда не перезаписываем — только ephemeral update/reply.
-  if (update && ephemeralCtx) {
-    try {
-      await interaction.update(payload);
-      return ui;
-    } catch {
-      /* fall through */
-    }
+  setConfig(interaction.guildId, { adminHubDept: dept === "nova" ? "nova" : "5rp" });
+  try {
+    await interaction.update(payload);
+    return ui;
+  } catch {
+    if (interaction.replied || interaction.deferred) await interaction.followUp({ ...payload, flags: V2_EPH });
+    else await interaction.reply({ ...payload, flags: V2_EPH });
   }
-  if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
-  else await interaction.reply(payload);
   return ui;
 }
 
 async function openTopic(interaction, tab) {
   const ui = uiSet(interaction, { tab });
   const payload = topicPayload(interaction.guild, tab, ui);
-  if (interaction.isMessageComponent?.() && !interaction.replied && !interaction.deferred) {
-    try {
-      await interaction.update(payload);
-      return;
-    } catch {
-      /* fall through */
-    }
-  }
+  // Разделы всегда ephemeral — статичную админку в канале не затираем.
   if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
   else await interaction.reply(payload);
 }
@@ -832,6 +795,7 @@ function rememberHub(guildId, channelId, messageId) {
   const cfg = getConfig(guildId);
   setConfig(guildId, {
     controlMessageId: String(messageId),
+    adminHubDept: cfg.adminHubDept === "nova" ? "nova" : "5rp",
     panelChannels: { ...(cfg.panelChannels || {}), control: String(channelId) },
   });
 }
@@ -855,6 +819,7 @@ export async function handlePanelCommand(interaction) {
     );
     return;
   }
+  setConfig(interaction.guild.id, { adminHubDept: "5rp" });
   const payload = hubPayload(interaction.guild);
   const msg = await interaction.reply({ ...payload, fetchReply: true });
   rememberHub(interaction.guild.id, interaction.channelId, msg.id);
@@ -1087,16 +1052,23 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
 
-  const deptOpen = id.match(/^c:adm:dept:(home|5rp|nova)$/);
+  if (interaction.isButton() && id === "c:adm:close") {
+    try {
+      await interaction.deferUpdate();
+      await interaction.message.delete().catch(() => null);
+    } catch {
+      await interaction.reply(v2Message("Админка", "Закрыто.", [], { ephemeral: true })).catch(() => null);
+    }
+    return true;
+  }
+
+  const deptOpen = id.match(/^c:adm:dept:(5rp|nova)$/);
   if (interaction.isButton() && deptOpen) {
     const dept = deptOpen[1];
-    const update = Boolean(interaction.message);
-    await openDept(interaction, dept === "home" ? "home" : dept, { update });
-    if (dept !== "home") {
-      logAdminChange(interaction, "Админка: открыл отдел", [
-        `Отдел: **${dept === "nova" ? "Нова в нове" : "5рп"}**`,
-      ]).catch(() => null);
-    }
+    await openDept(interaction, dept);
+    logAdminChange(interaction, "Админка: открыл отдел", [
+      `Отдел: **${dept === "nova" ? "Нова в нове" : "5рп"}**`,
+    ]).catch(() => null);
     return true;
   }
 
@@ -1114,8 +1086,10 @@ export async function handleAdminInteraction(interaction) {
         dm: "summary",
         family: "rooms",
       }[tabOpen[1]] || tabOpen[1];
-    // Если жмут раздел с корневой публичной админки без выбранного отдела — считаем 5рп.
-    if (!uiGet(interaction).dept) uiSet(interaction, { dept: "5rp" });
+    if (!uiGet(interaction).dept) {
+      const saved = getConfig(interaction.guildId).adminHubDept === "nova" ? "nova" : "5rp";
+      uiSet(interaction, { dept: saved });
+    }
     if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "afk", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
@@ -1126,7 +1100,7 @@ export async function handleAdminInteraction(interaction) {
     }
     // В отделе «Нова в нове» пока только панели.
     if (uiGet(interaction).dept === "nova" && tab !== "panels") {
-      await openDept(interaction, "nova", { update: true });
+      await openDept(interaction, "nova");
       return true;
     }
     await openTopic(interaction, tab);

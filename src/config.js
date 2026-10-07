@@ -47,6 +47,7 @@ export function defaultConfig() {
     afkInactiveRoleId: null,
     publishChannelId: null,
     controlMessageId: null,
+    adminHubDept: "5rp",
     panelChannels: {
       control: null,
       apps: null,
