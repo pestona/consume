@@ -146,17 +146,31 @@ function panelLine(cfg, key, label) {
   return `${label} → ${id ? `<#${id}>` : "ещё не публиковали"}`;
 }
 
-function hubPayload(guild) {
+function hubPayload(_guild, { ephemeral = false } = {}) {
+  return v2Message(
+    "Админка Consume",
+    "Выбери отдел. Пересылка панелей **не удаляет** прошлые сообщения — просто шлёт новую копию.",
+    [
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:dept:5rp", "5рп", "5️⃣", ButtonStyle.Primary),
+        btn("c:adm:dept:nova", "Нова в нове", "🆕", ButtonStyle.Primary),
+      ),
+    ],
+    { ephemeral },
+  );
+}
+
+function dept5rpPayload(guild) {
   const cfg = getConfig(guild.id);
   const body =
-    `Выбери раздел — у каждого своя настройка.\n\n` +
+    `Отдел **5рп** — заявки, машины, контракты, комнаты, архив, AFK и остальное.\n\n` +
     `${mark(cfg.ticketCategoryId)} Заявки · ${mark(cfg.autoparkManagerRoleIds?.length)} машины\n` +
     `${mark(cfg.kontraktChannelId)} Контракты · ${mark(cfg.tempVoiceCreateChannelId)} комнаты\n` +
     `${mark(cfg.archiveCategoryId)} Архив · ${mark(cfg.sborAccessRoleIds?.length || cfg.moderatorRoleIds?.length)} сбор\n` +
     `${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
     `Сборы: команда **/сбор**`;
 
-  return v2Message("Админка Consume", body, [
+  return v2Message("5рп", body, [
     new ActionRowBuilder().addComponents(
       btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
       btn("c:adm:tab:apps", "Заявки", "🎫"),
@@ -176,8 +190,23 @@ function hubPayload(guild) {
       btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
       btn("c:adm:tab:sbor", "Доступ", "🔑"),
       btn("c:adm:tab:afk", "AFK", "😴"),
+      btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
     ),
-  ]);
+  ], { ephemeral: true });
+}
+
+function deptNovaPayload() {
+  return v2Message(
+    "Нова в нове",
+    "Отдел **Нова в нове**.\nПока доступны только панели — список пустой, панели появятся позже.",
+    [
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
+        btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
+      ),
+    ],
+    { ephemeral: true },
+  );
 }
 
 function topicStatus(guild, tab, ui) {
@@ -185,8 +214,16 @@ function topicStatus(guild, tab, ui) {
   const acc = guildAcceptance(guild.id);
 
   if (tab === "panels") {
+    if (ui?.dept === "nova") {
+      return {
+        title: "Панели · Нова в нове",
+        body: "Пока пусто.\nСюда позже добавим панели отдела **Нова в нове**.\n\nПересылка не удаляет старые сообщения панелей.",
+        options: [],
+        placeholder: "Пока нет панелей",
+      };
+    }
     return {
-      title: "Панели",
+      title: "Панели · 5рп",
       body:
         `${panelLine(cfg, "apps", "Заявки")}\n` +
         `${panelLine(cfg, "maps", "Карты")}\n` +
@@ -196,7 +233,7 @@ function topicStatus(guild, tab, ui) {
         `${panelLine(cfg, "archive", "Архив")}\n` +
         `${panelLine(cfg, "afk", "AFK / Инактив")}\n` +
         `${panelLine(cfg, "control", "Админка")}\n\n` +
-        "Сначала панель — потом канал только для неё.",
+        "Отправка **не удаляет** прошлую панель — в канал уходит новая копия.",
       options: [
         { label: "Панель заявок", value: "pub:apps", emoji: "🎫", description: "Куда отправить" },
         { label: "Панель карт VZP", value: "pub:maps", emoji: "🗺️", description: "Куда отправить" },
@@ -511,6 +548,11 @@ function topicPayload(guild, tab, ui) {
       );
     rows.push(new ActionRowBuilder().addComponents(select));
   }
+  const deptBack =
+    ui?.dept === "nova" ? "c:adm:dept:nova" : ui?.dept === "5rp" ? "c:adm:dept:5rp" : "c:adm:dept:home";
+  rows.push(
+    new ActionRowBuilder().addComponents(btn(deptBack, "← Назад", null, ButtonStyle.Secondary)),
+  );
   return v2Message(t.title, t.body, rows, { ephemeral: true });
 }
 
@@ -641,24 +683,54 @@ function dropPickPayload(guild, tab, value) {
   return v2Message(meta.title, "Выбери ниже. Пустой выбор = сброс.", [row, back], { ephemeral: true });
 }
 
-async function editHub(interaction) {
-  const cfg = getConfig(interaction.guildId);
-  const chId = cfg.panelChannels?.control;
-  const msgId = cfg.controlMessageId;
-  if (!chId || !msgId || !interaction.guild) return;
-  const ch = interaction.guild.channels.cache.get(String(chId));
-  if (!ch?.isTextBased?.()) return;
+function isEphemeralMessage(interaction) {
   try {
-    const msg = await ch.messages.fetch(String(msgId));
-    await msg.edit(hubPayload(interaction.guild));
+    return Boolean(interaction.message?.flags?.has?.(MessageFlags.Ephemeral));
   } catch {
-    /* ignore */
+    return false;
   }
+}
+
+async function openDept(interaction, dept, { update = false } = {}) {
+  let payload;
+  let ui;
+  const ephemeralCtx = isEphemeralMessage(interaction);
+  if (dept === "nova") {
+    ui = uiSet(interaction, { dept: "nova", tab: "panels" });
+    payload = deptNovaPayload();
+  } else if (dept === "5rp") {
+    ui = uiSet(interaction, { dept: "5rp", tab: "summary" });
+    payload = dept5rpPayload(interaction.guild);
+  } else {
+    ui = uiSet(interaction, { dept: null, tab: "home" });
+    // Из ephemeral-меню возвращаемся ephemeral-корнем, публичное сообщение админки не трогаем.
+    payload = hubPayload(interaction.guild, { ephemeral: true });
+  }
+  // Публичную панель отделов никогда не перезаписываем — только ephemeral update/reply.
+  if (update && ephemeralCtx) {
+    try {
+      await interaction.update(payload);
+      return ui;
+    } catch {
+      /* fall through */
+    }
+  }
+  if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
+  else await interaction.reply(payload);
+  return ui;
 }
 
 async function openTopic(interaction, tab) {
   const ui = uiSet(interaction, { tab });
   const payload = topicPayload(interaction.guild, tab, ui);
+  if (interaction.isMessageComponent?.() && !interaction.replied && !interaction.deferred) {
+    try {
+      await interaction.update(payload);
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
   if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
   else await interaction.reply(payload);
 }
@@ -681,7 +753,6 @@ async function refreshTopic(interaction, tab) {
       /* ignore */
     }
   }
-  editHub(interaction).catch(() => null);
 }
 
 function maybeValue(builder, value) {
@@ -988,6 +1059,19 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
 
+  const deptOpen = id.match(/^c:adm:dept:(home|5rp|nova)$/);
+  if (interaction.isButton() && deptOpen) {
+    const dept = deptOpen[1];
+    const update = Boolean(interaction.message);
+    await openDept(interaction, dept === "home" ? "home" : dept, { update });
+    if (dept !== "home") {
+      logAdminChange(interaction, "Админка: открыл отдел", [
+        `Отдел: **${dept === "nova" ? "Нова в нове" : "5рп"}**`,
+      ]).catch(() => null);
+    }
+    return true;
+  }
+
   const tabOpen = id.match(/^c:adm:tab:(.+)$/);
   if (interaction.isButton() && tabOpen) {
     if (tabOpen[1] === "stats") return false;
@@ -1002,12 +1086,19 @@ export async function handleAdminInteraction(interaction) {
         dm: "summary",
         family: "rooms",
       }[tabOpen[1]] || tabOpen[1];
+    // Если жмут раздел с корневой публичной админки без выбранного отдела — считаем 5рп.
+    if (!uiGet(interaction).dept) uiSet(interaction, { dept: "5rp" });
     if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "afk", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
     }
     if (tab === "spam" && !(await canSpam(interaction)) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Нет прав на спам.");
+      return true;
+    }
+    // В отделе «Нова в нове» пока только панели.
+    if (uiGet(interaction).dept === "nova" && tab !== "panels") {
+      await openDept(interaction, "nova", { update: true });
       return true;
     }
     await openTopic(interaction, tab);
@@ -1061,7 +1152,6 @@ export async function handleAdminInteraction(interaction) {
       } catch {
         await refreshTopic(interaction, "panels");
       }
-      editHub(interaction).catch(() => null);
     }
     return true;
   }
