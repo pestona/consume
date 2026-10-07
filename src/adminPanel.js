@@ -9,6 +9,7 @@ import {
   MessageFlags,
   ModalBuilder,
   RoleSelectMenuBuilder,
+  SectionBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   TextDisplayBuilder,
@@ -160,6 +161,14 @@ function hubPayload(_guild, { ephemeral = false } = {}) {
   );
 }
 
+function deptSwitchAccessory(targetDept) {
+  const toNova = targetDept === "nova";
+  return new ButtonBuilder()
+    .setCustomId(toNova ? "c:adm:dept:nova" : "c:adm:dept:5rp")
+    .setLabel(toNova ? "Нова" : "5рп")
+    .setStyle(ButtonStyle.Primary);
+}
+
 function dept5rpPayload(guild) {
   const cfg = getConfig(guild.id);
   const body =
@@ -170,43 +179,62 @@ function dept5rpPayload(guild) {
     `${mark(cfg.botActionLogChannelId || cfg.modLogChannelId || cfg.leaveLogChannelId)} Логи\n\n` +
     `Сборы: команда **/сбор**`;
 
-  return v2Message("5рп", body, [
-    new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
-      btn("c:adm:tab:apps", "Заявки", "🎫"),
-      btn("c:adm:tab:cars", "Машины", "🚗"),
-      btn("c:adm:tab:kontr", "Контракты", "📜"),
-      btn("c:adm:tab:spam", "Спам", "📣", ButtonStyle.Danger),
-    ),
-    new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:logs", "Логи", "📋"),
-      btn("c:adm:tab:mods", "Модераторы", "🛡️"),
-      btn("c:adm:tab:rooms", "Комнаты", "🔊"),
-      btn("c:adm:tab:archive", "Архив", "📁"),
-      btn("c:adm:tab:protect", "Защита", "🚨", ButtonStyle.Danger),
-    ),
-    new ActionRowBuilder().addComponents(
-      btn("c:adm:tab:summary", "Сводка", "📊"),
-      btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
-      btn("c:adm:tab:sbor", "Доступ", "🔑"),
-      btn("c:adm:tab:afk", "AFK", "😴"),
-      btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
-    ),
-  ], { ephemeral: true });
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_DARK)
+    .addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 5рп"))
+        .setButtonAccessory(deptSwitchAccessory("nova")),
+    )
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
+        btn("c:adm:tab:apps", "Заявки", "🎫"),
+        btn("c:adm:tab:cars", "Машины", "🚗"),
+        btn("c:adm:tab:kontr", "Контракты", "📜"),
+        btn("c:adm:tab:spam", "Спам", "📣", ButtonStyle.Danger),
+      ),
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:tab:logs", "Логи", "📋"),
+        btn("c:adm:tab:mods", "Модераторы", "🛡️"),
+        btn("c:adm:tab:rooms", "Комнаты", "🔊"),
+        btn("c:adm:tab:archive", "Архив", "📁"),
+        btn("c:adm:tab:protect", "Защита", "🚨", ButtonStyle.Danger),
+      ),
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:tab:summary", "Сводка", "📊"),
+        btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
+        btn("c:adm:tab:sbor", "Доступ", "🔑"),
+        btn("c:adm:tab:afk", "AFK", "😴"),
+        btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
+      ),
+    );
+
+  return { components: [container], flags: V2_EPH };
 }
 
 function deptNovaPayload() {
-  return v2Message(
-    "Нова в нове",
-    "Отдел **Нова в нове**.\nПока доступны только панели — список пустой, панели появятся позже.",
-    [
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_DARK)
+    .addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent("## Нова в нове"))
+        .setButtonAccessory(deptSwitchAccessory("5rp")),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "Отдел **Нова в нове**.\nПока доступны только панели — список пустой, панели появятся позже.",
+      ),
+    )
+    .addActionRowComponents(
       new ActionRowBuilder().addComponents(
         btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
         btn("c:adm:dept:home", "← Отделы", null, ButtonStyle.Secondary),
       ),
-    ],
-    { ephemeral: true },
-  );
+    );
+
+  return { components: [container], flags: V2_EPH };
 }
 
 function topicStatus(guild, tab, ui) {
