@@ -121,8 +121,11 @@ function ticketDeptCfg(cfg, kind) {
       categoryId: cfg.novaTicketCategoryId,
       staffRoleIds: cfg.novaTicketStaffRoleIds || [],
       pingRoleIds: cfg.novaTicketPingRoleIds || [],
-      academyRoleIds: cfg.novaAcceptRoleIdsAcademy || [],
-      mainRoleIds: cfg.novaAcceptRoleIdsMain || [],
+      acceptRoleIds: cfg.novaAcceptRoleId
+        ? [cfg.novaAcceptRoleId]
+        : (cfg.novaAcceptRoleIdsAcademy || []).slice(0, 1),
+      academyRoleIds: [],
+      mainRoleIds: [],
       settingsHint: "/panel → Нова → Заявки",
     };
   }
@@ -333,7 +336,23 @@ function rejectModal(channelId) {
     );
 }
 
-export function ticketFinalRows(channelId) {
+export function ticketFinalRows(channelId, kind) {
+  if (kind === "nova") {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`c:tk:ok:${channelId}`)
+          .setLabel("Принять")
+          .setStyle(ButtonStyle.Success)
+          .setEmoji("✅"),
+        new ButtonBuilder()
+          .setCustomId(`c:tk:rejbtn:${channelId}`)
+          .setLabel("Отказать")
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji("❌"),
+      ),
+    ];
+  }
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -482,7 +501,7 @@ async function submitApplication(interaction, kind, fields) {
     await channel.send({
       content: pingContent || undefined,
       embeds: [emb],
-      components: ticketFinalRows(channel.id),
+      components: ticketFinalRows(channel.id, kind),
       allowedMentions: allowedRoleIds.length
         ? { roles: allowedRoleIds }
         : { users: [applicant.id] },
@@ -532,12 +551,19 @@ async function handleAccept(interaction, channelId, track) {
   const guild = interaction.guild;
   const cfg = getConfig(guild.id);
   const dept = ticketDeptCfg(cfg, rec.kind);
-  const roleIds = track === "academy" ? dept.academyRoleIds : dept.mainRoleIds;
+  const roleIds =
+    rec.kind === "nova"
+      ? dept.acceptRoleIds
+      : track === "academy"
+        ? dept.academyRoleIds
+        : dept.mainRoleIds;
   if (!roleIds?.length) {
     rec.phase = "interview";
     ticketPut(channelId, rec);
     await interaction.editReply(
-      `Роли принятия не заданы. Откройте **${dept.settingsHint}** и выберите роли академии/основы.`,
+      rec.kind === "nova"
+        ? `Роль принятия не задана. Откройте **${dept.settingsHint}**.`
+        : `Роли принятия не заданы. Откройте **${dept.settingsHint}** и выберите роли академии/основы.`,
     );
     return;
   }
@@ -566,7 +592,14 @@ async function handleAccept(interaction, channelId, track) {
     }
   }
   try {
-    await member.roles.add(roles, track === "academy" ? "Заявка принята в академию" : "Заявка принята в основу");
+    await member.roles.add(
+      roles,
+      rec.kind === "nova"
+        ? "Заявка Нова принята"
+        : track === "academy"
+          ? "Заявка принята в академию"
+          : "Заявка принята в основу",
+    );
   } catch {
     rec.phase = "interview";
     ticketPut(channelId, rec);
@@ -577,13 +610,19 @@ async function handleAccept(interaction, channelId, track) {
   }
   await safeDm(
     member.user,
-    track === "academy"
-      ? "> **Вас приняли в академию. Добро пожаловать!**"
-      : "> **Вас приняли в основу. Добро пожаловать!**",
+    rec.kind === "nova"
+      ? "> **Вас приняли. Добро пожаловать!**"
+      : track === "academy"
+        ? "> **Вас приняли в академию. Добро пожаловать!**"
+        : "> **Вас приняли в основу. Добро пожаловать!**",
   );
   ticketDelete(channelId);
   await interaction.editReply(
-    track === "academy" ? "Принят в академию. Удаляю канал…" : "Принят в основу. Удаляю канал…",
+    rec.kind === "nova"
+      ? "Принят. Удаляю канал…"
+      : track === "academy"
+        ? "Принят в академию. Удаляю канал…"
+        : "Принят в основу. Удаляю канал…",
   );
   try {
     await interaction.channel?.delete("Заявка принята");
@@ -737,6 +776,11 @@ export async function handleTicketInteraction(interaction) {
   const main = id.match(/^c:tk:main:(\d+)$/);
   if (interaction.isButton() && main) {
     await handleAccept(interaction, main[1], "main");
+    return true;
+  }
+  const ok = id.match(/^c:tk:ok:(\d+)$/);
+  if (interaction.isButton() && ok) {
+    await handleAccept(interaction, ok[1], "nova");
     return true;
   }
   const rejBtn = id.match(/^c:tk:rejbtn:(\d+)$/);

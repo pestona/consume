@@ -211,8 +211,8 @@ function deptNovaPayload(guild) {
   const acc = guildAcceptance(guild.id);
   const body =
     `Отдел **Нова в нове** — заявки со своей категорией, ролями и гифкой.\n\n` +
-    `${mark(cfg.novaTicketCategoryId)} Категория · ${mark(cfg.novaTicketStaffRoleIds?.length)} стафф\n` +
-    `${mark(cfg.novaAcceptRoleIdsAcademy?.length || cfg.novaAcceptRoleIdsMain?.length)} роли принятия · ${mark(cfg.novaTicketGifUrl)} гифка\n` +
+    `${mark(cfg.novaTicketCategoryId)} Категория · ${mark(cfg.novaTicketStaffRoleIds?.length)} рекрутеры\n` +
+    `${mark(cfg.novaAcceptRoleId)} роль принятия · ${mark(cfg.novaTicketGifUrl)} гифка\n` +
     `Приём: **${acc.nova ? "открыт" : "закрыт"}**`;
 
   const container = new ContainerBuilder()
@@ -286,19 +286,17 @@ function topicStatus(guild, tab, ui) {
         title: "Заявки · Нова в нове",
         body:
           `${mark(cfg.novaTicketCategoryId)} Категория: ${fmtCh(cfg.novaTicketCategoryId)}\n` +
-          `${mark(cfg.novaTicketStaffRoleIds?.length)} Стафф: ${mentionRoles(cfg.novaTicketStaffRoleIds)}\n` +
-          `${mark(cfg.novaTicketPingRoleIds?.length)} Пинг: ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
-          `Академия: ${mentionRoles(cfg.novaAcceptRoleIdsAcademy)}\n` +
-          `Основа: ${mentionRoles(cfg.novaAcceptRoleIdsMain)}\n` +
+          `${mark(cfg.novaTicketStaffRoleIds?.length)} Рекрутеры: ${mentionRoles(cfg.novaTicketStaffRoleIds)}\n` +
+          `${mark(cfg.novaTicketPingRoleIds?.length)} Тег: ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
+          `Роль после принятия: ${cfg.novaAcceptRoleId ? `<@&${cfg.novaAcceptRoleId}>` : "—"}\n` +
           `Гифка: ${gif ? "задана" : "❌ нет"}\n` +
           `Приём: ${statusLine(acc.nova)}\n\n` +
-          "Категория, роли, гифка панели и вкл/выкл набора.",
+          "Рекрутеров и тег можно выбрать несколько. После принятия выдаётся одна роль.",
         options: [
           { label: "Категория тикетов", value: "c:novatcat", emoji: "📁", description: "Где создавать тикеты" },
-          { label: "Стафф тикетов", value: "r:novastaff", emoji: "🛡️", description: "Кто видит тикет" },
-          { label: "Пинг новой заявки", value: "r:novaping", emoji: "📣", description: "Кого пинговать" },
-          { label: "Роли академии", value: "r:novaacad", emoji: "🎓", description: "Выдать при принятии" },
-          { label: "Роли основы", value: "r:novamain", emoji: "✅", description: "Выдать при принятии" },
+          { label: "Роли рекрутера", value: "r:novastaff", emoji: "🛡️", description: "Несколько — кто видит тикет" },
+          { label: "Роли тега", value: "r:novaping", emoji: "📣", description: "Несколько — кого пинговать" },
+          { label: "Роль после принятия", value: "r:novaok", emoji: "✅", description: "Одна роль при принятии" },
           { label: "Гифка панели", value: "t:novagif", emoji: "🖼️", description: "Ссылка на gif/png" },
           { label: "Вкл/выкл приём", value: "t:novaacc", emoji: "📝", description: "Открыть или закрыть набор" },
         ],
@@ -677,10 +675,9 @@ const PICK_META = {
     key: "novaTicketCategoryId",
     single: true,
   },
-  "r:novastaff": { kind: "role", selectId: "c:cfg:r:novastaff", title: "Стафф тикетов Нова", max: 25, key: "novaTicketStaffRoleIds" },
-  "r:novaping": { kind: "role", selectId: "c:cfg:r:novaping", title: "Пинг заявки Нова", max: 25, key: "novaTicketPingRoleIds" },
-  "r:novaacad": { kind: "role", selectId: "c:cfg:r:novaacad", title: "Роли академии Нова", max: 25, key: "novaAcceptRoleIdsAcademy" },
-  "r:novamain": { kind: "role", selectId: "c:cfg:r:novamain", title: "Роли основы Нова", max: 25, key: "novaAcceptRoleIdsMain" },
+  "r:novastaff": { kind: "role", selectId: "c:cfg:r:novastaff", title: "Роли рекрутера Нова", max: 25, key: "novaTicketStaffRoleIds" },
+  "r:novaping": { kind: "role", selectId: "c:cfg:r:novaping", title: "Роли тега Нова", max: 25, key: "novaTicketPingRoleIds" },
+  "r:novaok": { kind: "role", selectId: "c:cfg:r:novaok", title: "Роль после принятия", max: 1, key: "novaAcceptRoleId", single: true },
 };
 
 const PANEL_LABELS = {
@@ -933,8 +930,7 @@ const ROLE_PATCH = {
   "c:cfg:r:afkinact": (v) => ({ afkInactiveRoleId: v[0] || null }),
   "c:cfg:r:novastaff": (v) => ({ novaTicketStaffRoleIds: v }),
   "c:cfg:r:novaping": (v) => ({ novaTicketPingRoleIds: v }),
-  "c:cfg:r:novaacad": (v) => ({ novaAcceptRoleIdsAcademy: v }),
-  "c:cfg:r:novamain": (v) => ({ novaAcceptRoleIdsMain: v }),
+  "c:cfg:r:novaok": (v) => ({ novaAcceptRoleId: v[0] || null }),
 };
 
 const USER_PATCH = {
@@ -987,10 +983,9 @@ const CFG_LABELS = {
   "c:cfg:r:archchain": "Цепочка рангов",
   "c:cfg:r:afkinact": "Роль инактива",
   "c:cfg:c:novatcat": "Категория тикетов Нова",
-  "c:cfg:r:novastaff": "Стафф тикетов Нова",
-  "c:cfg:r:novaping": "Пинг заявки Нова",
-  "c:cfg:r:novaacad": "Роли академии Нова",
-  "c:cfg:r:novamain": "Роли основы Нова",
+  "c:cfg:r:novastaff": "Роли рекрутера Нова",
+  "c:cfg:r:novaping": "Роли тега Нова",
+  "c:cfg:r:novaok": "Роль после принятия Нова",
 };
 
 const MENU_LABELS = {
@@ -1029,10 +1024,9 @@ const MENU_LABELS = {
   "pub:apps": "Отправить панель заявок",
   "pub:novaapps": "Отправить панель заявок Нова",
   "c:novatcat": "Категория тикетов Нова",
-  "r:novastaff": "Стафф тикетов Нова",
-  "r:novaping": "Пинг заявки Нова",
-  "r:novaacad": "Роли академии Нова",
-  "r:novamain": "Роли основы Нова",
+  "r:novastaff": "Роли рекрутера Нова",
+  "r:novaping": "Роли тега Нова",
+  "r:novaok": "Роль после принятия Нова",
   "t:novagif": "Гифка панели заявок",
   "t:novaacc": "Вкл/выкл приём Нова",
   "pub:maps": "Отправить панель карт",
