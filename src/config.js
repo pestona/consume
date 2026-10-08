@@ -15,6 +15,12 @@ export const DEFAULT_NOVA_PANEL_TEXT =
 
 export const MAX_NOVA_QUESTIONS = 5;
 
+export const DEFAULT_WELCOME_PANEL_TEXT =
+  "Приветствуем тебя!\n\n" +
+  "Заявку можно подать тут:\n" +
+  "**Nova RP** — {nova}\n" +
+  "**5 RP** — {5rp}";
+
 export const DEFAULT_NOVA_QUESTIONS = [
   { label: "Возраст", placeholder: "Пример: 18", long: false },
   { label: "Онлайн", placeholder: "Пример: 4-6 часов", long: false },
@@ -36,7 +42,10 @@ export function defaultConfig() {
     novaTicketPanelText: DEFAULT_NOVA_PANEL_TEXT,
     novaTicketCooldownDays: 0,
     novaTicketQuestions: DEFAULT_NOVA_QUESTIONS,
-    novaWelcomeChannelId: null,
+    welcomeGifUrl: null,
+    welcomePanelText: DEFAULT_WELCOME_PANEL_TEXT,
+    welcomeNovaLinkChannelId: null,
+    welcomeRpLinkChannelId: null,
     acceptRoleIdsAcademy: [],
     acceptRoleIdsMain: [],
     botActionLogChannelId: null,
@@ -86,6 +95,7 @@ export function defaultConfig() {
       archive: null,
       afk: null,
       novaApps: null,
+      welcome: null,
     },
   };
 }
@@ -103,6 +113,9 @@ export function getConfig(guildId) {
   }
   if (!String(merged.novaTicketPanelText || "").trim()) {
     merged.novaTicketPanelText = DEFAULT_NOVA_PANEL_TEXT;
+  }
+  if (!String(merged.welcomePanelText || "").trim()) {
+    merged.welcomePanelText = DEFAULT_WELCOME_PANEL_TEXT;
   }
   return merged;
 }

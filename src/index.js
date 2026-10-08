@@ -13,7 +13,7 @@ import {
   trackReactionActivity,
   trackVoiceActivity,
 } from "./activity.js";
-import { handleTicketInteraction, onNovaMemberAdd, onNovaMemberUpdate } from "./tickets.js";
+import { handleTicketInteraction } from "./tickets.js";
 import { handleMapsInteraction } from "./maps.js";
 import { handleKontraktInteraction } from "./kontrakt.js";
 import { handleAutoparkInteraction, autoparkExpireLoop } from "./autopark.js";
@@ -149,16 +149,6 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   }
   onTempVoiceState(oldState, newState).catch((err) =>
     logJson("ERROR", "temp voice", { error: String(err) }),
-  );
-});
-
-client.on(Events.GuildMemberAdd, (member) => {
-  onNovaMemberAdd(member).catch((err) => logJson("ERROR", "nova welcome", { error: String(err) }));
-});
-
-client.on(Events.GuildMemberUpdate, (oldMember, member) => {
-  onNovaMemberUpdate(oldMember, member).catch((err) =>
-    logJson("ERROR", "nova welcome update", { error: String(err) }),
   );
 });
 

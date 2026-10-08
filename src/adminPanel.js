@@ -20,7 +20,7 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_NOVA_PANEL_TEXT, MAX_NOVA_QUESTIONS, getConfig, setConfig } from "./config.js";
+import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_WELCOME_PANEL_TEXT, MAX_NOVA_QUESTIONS, getConfig, setConfig } from "./config.js";
 import {
   applicationPanel,
   buildApplicationEmbed,
@@ -31,6 +31,12 @@ import {
   registerNovaAppPanel,
   setGuildAcceptance,
 } from "./tickets.js";
+import {
+  refreshWelcomePanels,
+  registerWelcomePanel,
+  welcomeLinkChannels,
+  welcomePanelPayload,
+} from "./welcome.js";
 import { buildMapsEmbed, mapsPanel } from "./maps.js";
 import {
   buildKontraktPanelEmbed,
@@ -46,6 +52,7 @@ import { createChannelBackup, getChannelBackupMeta, restoreChannelBackup } from 
 import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
 import { logAdminChange } from "./schedulers.js";
 import {
+  COLOR_BLUE,
   COLOR_DARK,
   COLOR_GREEN,
   isGuildManager,
@@ -237,8 +244,7 @@ function deptNovaPayload(guild) {
     `Отдел **Нова в нове** — заявки со своей категорией, ролями и гифкой.\n\n` +
     `${mark(cfg.novaTicketCategoryId)} Категория · ${mark(cfg.novaTicketStaffRoleIds?.length)} рекрутеры\n` +
     `${mark(cfg.novaAcceptRoleId)} роль принятия · ${mark(cfg.novaTicketGifUrl)} гифка\n` +
-    `${mark(cfg.novaWelcomeChannelId)} приветствие: ${fmtCh(cfg.novaWelcomeChannelId)}\n` +
-    `Nova RP: ${fmtCh(cfg.panelChannels?.novaApps)} · 5 RP: ${fmtCh(cfg.panelChannels?.apps)}\n` +
+    `${mark(cfg.welcomeGifUrl || cfg.welcomePanelText)} приветствие\n` +
     `Приём: **${acc.nova ? "открыт" : "закрыт"}**`;
 
   const container = new ContainerBuilder()
@@ -253,14 +259,7 @@ function deptNovaPayload(guild) {
       new ActionRowBuilder().addComponents(
         btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
         btn("c:adm:tab:apps", "Заявки", "🎫"),
-      ),
-      channelSelect(
-        guild,
-        "c:cfg:c:novawelcome",
-        "Канал приветствия новых участников",
-        TEXT_TYPES,
-        cfg.novaWelcomeChannelId ? [cfg.novaWelcomeChannelId] : [],
-        1,
+        btn("c:adm:tab:welcome", "Приветствие", "👋"),
       ),
     );
 
@@ -284,7 +283,6 @@ function novaTicketsAdminPayload(guild) {
     `**Тег:** ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
     `**Роль после принятия:** ${cfg.novaAcceptRoleId ? `<@&${cfg.novaAcceptRoleId}>` : "—"}\n` +
     `**Категория:** ${fmtCh(cfg.novaTicketCategoryId)}\n` +
-    `**Приветствие:** ${fmtCh(cfg.novaWelcomeChannelId)}\n` +
     `**Набор:** ${acc.nova ? "открыт" : "закрыт"}\n` +
     `**Повтор после отказа:** ${days} дн.\n` +
     `**Вопросы:** ${qs.map((q) => q.label).join(" · ")}`;
@@ -342,10 +340,12 @@ function topicStatus(guild, tab, ui) {
       return {
         title: "Панели · Нова в нове",
         body:
-          `${panelLine(cfg, "novaApps", "Заявки")}\n\n` +
+          `${panelLine(cfg, "novaApps", "Заявки")}\n` +
+          `${panelLine(cfg, "welcome", "Приветствие")}\n\n` +
           "Отправка **не удаляет** прошлую панель — в канал уходит новая копия.",
         options: [
           { label: "Панель заявок", value: "pub:novaapps", emoji: "🎫", description: "Куда отправить" },
+          { label: "Панель приветствия", value: "pub:welcome", emoji: "👋", description: "Куда отправить" },
         ],
         placeholder: "Какую панель отправить?",
       };
@@ -660,6 +660,7 @@ function topicStatus(guild, tab, ui) {
 
 function topicPayload(guild, tab, ui) {
   if (tab === "novaq") return novaQuestionsEditorPayload(guild, ui);
+  if (tab === "welcome") return welcomeAdminPayload(guild);
   if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
   const rows = [];
@@ -759,6 +760,7 @@ const PICK_META = {
 const PANEL_LABELS = {
   apps: "Заявки",
   novaapps: "Заявки Нова",
+  welcome: "Приветствие",
   maps: "Карты VZP",
   kontr: "Контракты",
   ap: "Автопарк",
@@ -916,6 +918,89 @@ function novaPanelTextModal(cfg) {
             .setRequired(true)
             .setPlaceholder("Пустой текст вернёт стандартный."),
           cfg.novaTicketPanelText || DEFAULT_NOVA_PANEL_TEXT,
+        ),
+      ),
+    );
+}
+
+function welcomeAdminPayload(guild) {
+  const cfg = getConfig(guild.id);
+  const gif = String(cfg.welcomeGifUrl || "").trim();
+  const links = welcomeLinkChannels(cfg);
+  const body =
+    `Оформление панели приветствия: гифка, текст и ссылки на заявки.\n\n` +
+    `**GIF:** ${gif ? "установлен" : "не задан"}\n` +
+    `**Nova RP:** ${fmtCh(links.nova)}\n` +
+    `**5 RP:** ${fmtCh(links.rp)}\n` +
+    `${panelLine(cfg, "welcome", "Панель")}\n\n` +
+    "В тексте панели: `{nova}` и `{5rp}` — подставятся каналы заявок.";
+
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_BLUE)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Приветствие\n${body}`))
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:welgif", "GIF по ссылке", null, ButtonStyle.Secondary),
+        btn("c:adm:weltext", "Текст панели", null, ButtonStyle.Secondary),
+        btn("c:adm:welsend", "Отправить панель", null, ButtonStyle.Primary),
+        btn("c:adm:dept:nova", "Назад", null, ButtonStyle.Secondary),
+      ),
+      channelSelect(
+        guild,
+        "c:cfg:c:welnnova",
+        "Канал заявок Nova RP",
+        TEXT_TYPES,
+        cfg.welcomeNovaLinkChannelId ? [cfg.welcomeNovaLinkChannelId] : [],
+        1,
+      ),
+      channelSelect(
+        guild,
+        "c:cfg:c:welrp",
+        "Канал заявок 5 RP",
+        TEXT_TYPES,
+        cfg.welcomeRpLinkChannelId ? [cfg.welcomeRpLinkChannelId] : [],
+        1,
+      ),
+    );
+
+  return { components: [container], flags: V2 };
+}
+
+function welcomeGifModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:welgif")
+    .setTitle("Гифка приветствия")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("url")
+            .setLabel("Ссылка на gif/png/jpg")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(400)
+            .setRequired(false)
+            .setPlaceholder("https://... .gif  (пусто = убрать)"),
+          cfg.welcomeGifUrl,
+        ),
+      ),
+    );
+}
+
+function welcomeTextModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:weltext")
+    .setTitle("Текст приветствия")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("text")
+            .setLabel("Текст ({nova} и {5rp})")
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(3500)
+            .setRequired(true)
+            .setPlaceholder("Пустой текст вернёт стандартный."),
+          cfg.welcomePanelText || DEFAULT_WELCOME_PANEL_TEXT,
         ),
       ),
     );
@@ -1157,7 +1242,8 @@ const CHANNEL_PATCH = {
   "c:cfg:c:kontr": (v) => ({ kontraktChannelId: v[0] || null }),
   "c:cfg:c:archcat": (v) => ({ archiveCategoryId: v[0] || null }),
   "c:cfg:c:novatcat": (v) => ({ novaTicketCategoryId: v[0] || null }),
-  "c:cfg:c:novawelcome": (v) => ({ novaWelcomeChannelId: v[0] || null }),
+  "c:cfg:c:welnnova": (v) => ({ welcomeNovaLinkChannelId: v[0] || null }),
+  "c:cfg:c:welrp": (v) => ({ welcomeRpLinkChannelId: v[0] || null }),
 };
 
 const CFG_LABELS = {
@@ -1194,7 +1280,8 @@ const CFG_LABELS = {
   "c:cfg:r:archchain": "Цепочка рангов",
   "c:cfg:r:afkinact": "Роль инактива",
   "c:cfg:c:novatcat": "Категория тикетов Нова",
-  "c:cfg:c:novawelcome": "Канал приветствия Нова",
+  "c:cfg:c:welnnova": "Канал заявок Nova RP",
+  "c:cfg:c:welrp": "Канал заявок 5 RP",
   "c:cfg:r:novastaff": "Роли рекрутера Нова",
   "c:cfg:r:novaping": "Роли тега Нова",
   "c:cfg:r:novaok": "Роль после принятия Нова",
@@ -1235,6 +1322,7 @@ const MENU_LABELS = {
   "u:anuser": "Whitelist люди",
   "pub:apps": "Отправить панель заявок",
   "pub:novaapps": "Отправить панель заявок Нова",
+  "pub:welcome": "Отправить панель приветствия",
   "c:novatcat": "Категория тикетов Нова",
   "r:novastaff": "Роли рекрутера Нова",
   "r:novaping": "Роли тега Нова",
@@ -1270,6 +1358,7 @@ const TAB_LABELS = {
   sbor: "Доступ",
   rooms: "Комнаты",
   archive: "Архив",
+  welcome: "Приветствие",
   afk: "AFK / Инактив",
   protect: "Защита",
   summary: "Сводка",
@@ -1298,6 +1387,10 @@ async function publishTo(interaction, kind, channel) {
       const msg = await ch.send(novaApplicationPayload(interaction.guild.id));
       registerNovaAppPanel(interaction.guild.id, ch.id, msg.id);
       rememberPanelChannel(interaction.guild.id, "novaApps", ch.id);
+    } else if (kind === "welcome") {
+      const msg = await ch.send(welcomePanelPayload(interaction.guild.id));
+      registerWelcomePanel(interaction.guild.id, ch.id, msg.id);
+      rememberPanelChannel(interaction.guild.id, "welcome", ch.id);
     } else if (kind === "maps") {
       await ch.send({ embeds: [buildMapsEmbed()], components: [mapsPanel()] });
       rememberPanelChannel(interaction.guild.id, "maps", ch.id);
@@ -1378,6 +1471,24 @@ export async function handleAdminInteraction(interaction) {
     uiSet(interaction, { dept: "nova", tab: "apps" });
     logAdminChange(interaction, "Админка: выбрал пункт", ["Кулдаун"]).catch(() => null);
     await interaction.showModal(novaCooldownModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:welgif") {
+    uiSet(interaction, { dept: "nova", tab: "welcome" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["GIF приветствия"]).catch(() => null);
+    await interaction.showModal(welcomeGifModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:weltext") {
+    uiSet(interaction, { dept: "nova", tab: "welcome" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["Текст приветствия"]).catch(() => null);
+    await interaction.showModal(welcomeTextModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:welsend") {
+    uiSet(interaction, { dept: "nova", tab: "welcome" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["Отправить панель приветствия"]).catch(() => null);
+    await showPanel(interaction, dropPickPayload(interaction.guild, "welcome", "pub:welcome"));
     return true;
   }
   if (interaction.isButton() && id === "c:adm:novaq") {
@@ -1509,7 +1620,7 @@ export async function handleAdminInteraction(interaction) {
       await safeReply(interaction, "Нет прав на спам.");
       return true;
     }
-    if (uiGet(interaction).dept === "nova" && tab !== "panels" && tab !== "apps") {
+    if (uiGet(interaction).dept === "nova" && !["panels", "apps", "welcome"].includes(tab)) {
       await openDept(interaction, "nova");
       return true;
     }
@@ -1555,7 +1666,14 @@ export async function handleAdminInteraction(interaction) {
               .setMaxValues(1)
               .setChannelTypes(...TEXT_TYPES),
           ),
-          new ActionRowBuilder().addComponents(btn("c:adm:back:panels", "← Назад", null, ButtonStyle.Secondary)),
+          new ActionRowBuilder().addComponents(
+            btn(
+              uiGet(interaction).tab === "welcome" ? "c:adm:back:welcome" : "c:adm:back:panels",
+              "← Назад",
+              null,
+              ButtonStyle.Secondary,
+            ),
+          ),
         ],
       );
       await showPanel(interaction, payload);
@@ -1799,9 +1917,10 @@ export async function handleAdminInteraction(interaction) {
       `Было: ${fmt(oldVal)}`,
       `Стало: ${fmt(newVal)}`,
     ]).catch(() => null);
-    if (id === "c:cfg:c:novawelcome") {
-      uiSet(interaction, { dept: "nova" });
-      await showPanel(interaction, deptNovaPayload(interaction.guild));
+    if (id === "c:cfg:c:welnnova" || id === "c:cfg:c:welrp") {
+      uiSet(interaction, { dept: "nova", tab: "welcome" });
+      await refreshTopic(interaction, "welcome");
+      refreshWelcomePanels(interaction.client, interaction.guildId).catch(() => null);
       return true;
     }
     if (id.includes(":nova")) uiSet(interaction, { dept: "nova", tab: "apps" });
@@ -1849,6 +1968,38 @@ export async function handleAdminInteraction(interaction) {
     uiSet(interaction, { dept: "nova", tab: "apps" });
     await refreshTopic(interaction, "apps");
     refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:welgif") {
+    const raw = String(interaction.fields.getTextInputValue("url") || "").trim();
+    if (raw) {
+      try {
+        const u = new URL(raw);
+        if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("bad");
+      } catch {
+        await safeReply(interaction, "Нужна обычная ссылка http(s) на картинку/гифку.");
+        return true;
+      }
+    }
+    setConfig(interaction.guildId, { welcomeGifUrl: raw || null });
+    logAdminChange(interaction, "Админка: гифка приветствия", [
+      raw ? `Ссылка: ${raw.slice(0, 120)}` : "Гифка снята",
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "nova", tab: "welcome" });
+    await refreshTopic(interaction, "welcome");
+    refreshWelcomePanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:weltext") {
+    const text = String(interaction.fields.getTextInputValue("text") || "").trim() || DEFAULT_WELCOME_PANEL_TEXT;
+    setConfig(interaction.guildId, { welcomePanelText: text });
+    logAdminChange(interaction, "Админка: текст приветствия", [
+      `Длина: **${text.length}** символов`,
+      `Превью: ${text.slice(0, 120)}${text.length > 120 ? "…" : ""}`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "nova", tab: "welcome" });
+    await refreshTopic(interaction, "welcome");
+    refreshWelcomePanels(interaction.client, interaction.guildId).catch(() => null);
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:novacd") {
