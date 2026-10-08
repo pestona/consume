@@ -17,7 +17,7 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { kvGet, kvSet } from "./db.js";
-import { getConfig } from "./config.js";
+import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_NOVA_QUESTIONS, getConfig } from "./config.js";
 import { canHandleTicket, canModerate } from "./perms.js";
 import {
   COLOR_BLUE,
@@ -42,6 +42,7 @@ function ticketsState() {
   data.byChannel = data.byChannel || data.by_channel || {};
   data.counter = data.counter || {};
   data.pending = data.pending || {};
+  data.novaRejectAt = data.novaRejectAt && typeof data.novaRejectAt === "object" ? data.novaRejectAt : {};
   return data;
 }
 
@@ -50,6 +51,7 @@ function saveTickets(data) {
     byChannel: data.byChannel,
     counter: data.counter,
     pending: data.pending,
+    novaRejectAt: data.novaRejectAt || {},
   });
 }
 
@@ -105,13 +107,40 @@ function ticketDelete(channelId) {
   saveTickets(data);
 }
 
-function normalizeFields(kind, fields) {
+export function novaQuestions(cfg) {
+  const list = Array.isArray(cfg?.novaTicketQuestions) ? cfg.novaTicketQuestions : [];
+  const out = list
+    .map((q) => ({
+      label: String(q?.label || "").trim().slice(0, 45),
+      placeholder: String(q?.placeholder || "").trim().slice(0, 100),
+    }))
+    .filter((q) => q.label);
+  return out.length ? out.slice(0, 4) : DEFAULT_NOVA_QUESTIONS;
+}
+
+function normalizeFields(kind, fields, cfg) {
   const values = (fields || []).map(([, v]) => String(v));
   const names =
     kind === "rp"
       ? ["Возраст", "Онлайн", "Семьи", "Откуда", "Откат"]
-      : ["Возраст", "Онлайн", "Семьи", "Откат"];
+      : kind === "nova"
+        ? novaQuestions(cfg).map((q) => q.label)
+        : ["Возраст", "Онлайн", "Семьи", "Откат"];
   return names.map((name, i) => [name, values[i] || "—"]);
+}
+
+function novaCooldownLeftMs(guildId, userId) {
+  const days = Math.max(0, Number(getConfig(guildId).novaTicketCooldownDays || 0));
+  if (!days) return 0;
+  const at = Number(ticketsState().novaRejectAt?.[`${guildId}:${userId}`] || 0);
+  if (!at) return 0;
+  return Math.max(0, at + days * 86_400_000 - Date.now());
+}
+
+function markNovaRejected(guildId, userId) {
+  const data = ticketsState();
+  data.novaRejectAt[`${guildId}:${userId}`] = Date.now();
+  saveTickets(data);
 }
 
 function ticketKindLabel(kind) {
@@ -151,7 +180,7 @@ function buildTicketEmbed({ kind, ticketNo, applicant, fields }) {
     .setColor(kind === "rp" ? COLOR_BLUE : COLOR_GREEN)
     .setTimestamp(new Date())
     .addFields({ name: "ПОЛЬЗОВАТЕЛЬ", value: applicant.toString(), inline: false });
-  for (const [name, value] of normalizeFields(kind, fields)) {
+  for (const [name, value] of normalizeFields(kind, fields, getConfig(applicant.guildId || applicant.guild?.id))) {
     emb.addFields({ name, value: embedFieldCodeblock(value), inline: false });
   }
   emb.setFooter({
@@ -246,16 +275,14 @@ export function novaApplicationPayload(guildId) {
   const { nova } = guildAcceptance(guildId);
   const cfg = getConfig(guildId);
   const gif = normalizeImageUrl(cfg.novaTicketGifUrl);
+  const days = Math.max(0, Number(cfg.novaTicketCooldownDays || 0));
+  const raw = String(cfg.novaTicketPanelText || DEFAULT_NOVA_PANEL_TEXT);
   const body =
     `## Оформление заявки в семью.\n` +
-    `После подачи заявка отправляется на рассмотрение персоналу.\n` +
-    `> В среднем заявки обрабатываются в течение 1–2 дней\n\n` +
-    `Следите за статусом набора.\n` +
-    `**Если возможности заполнить заявку нет — набор закрыт.**\n` +
-    `Каждое открытие набора сопровождается тегами в этом канале.\n` +
-    `> В случае отказа можете подать заявку повторно через 0 дн.\n\n` +
-    `**Статус набора:** ${nova ? "открыт" : "закрыт"}\n` +
-    `**Подать заявку:**`;
+    raw
+      .replaceAll("{cooldown}", String(days))
+      .replaceAll("{status}", nova ? "открыт" : "закрыт")
+      .slice(0, 3500);
 
   const container = new ContainerBuilder().setAccentColor(COLOR_DARK);
   if (gif) {
@@ -317,27 +344,23 @@ export async function refreshNovaAppPanels(client, guildId) {
   }
 }
 
-function novaModal() {
+function novaModal(guildId) {
+  const qs = novaQuestions(getConfig(guildId));
   const modal = new ModalBuilder().setCustomId("c:nova:m:app").setTitle("Заявка в семью");
-  const fields = [
-    ["f1", "Возраст", "Пример: 18", TextInputStyle.Short, 200],
-    ["f2", "Онлайн", "Пример: 4-6 часов", TextInputStyle.Short, 200],
-    ["f3", "В каких семьях были", "Пример: Killa, Kai, Black", TextInputStyle.Short, 100],
-    ["f4", "Откат стрельбы", "Ссылка на YouTube", TextInputStyle.Paragraph, 500],
-  ];
-  for (const [id, label, placeholder, style, max] of fields) {
+  qs.forEach((q, i) => {
+    const long = i === qs.length - 1;
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
-          .setCustomId(id)
-          .setLabel(label)
-          .setPlaceholder(placeholder)
-          .setStyle(style)
-          .setMaxLength(max)
+          .setCustomId(`f${i + 1}`)
+          .setLabel(q.label.slice(0, 45) || `Вопрос ${i + 1}`)
+          .setPlaceholder((q.placeholder || " ").slice(0, 100))
+          .setStyle(long ? TextInputStyle.Paragraph : TextInputStyle.Short)
+          .setMaxLength(long ? 500 : 200)
           .setRequired(true),
       ),
     );
-  }
+  });
   return modal;
 }
 
@@ -575,8 +598,18 @@ async function submitApplication(interaction, kind, fields) {
     return;
   }
 
+  const cfg = getConfig(interaction.guild.id);
+  if (kind === "nova") {
+    const left = novaCooldownLeftMs(interaction.guild.id, applicant.id);
+    if (left > 0) {
+      const days = Math.max(1, Math.ceil(left / 86_400_000));
+      await interaction.editReply(`Повторная заявка доступна через **${days}** дн.`);
+      return;
+    }
+  }
+
   const ticketNo = nextTicketNo(interaction.guild.id);
-  const norm = normalizeFields(kind, fields);
+  const norm = normalizeFields(kind, fields, cfg);
   const emb = buildTicketEmbed({ kind, ticketNo, applicant, fields: norm });
 
   try {
@@ -748,6 +781,7 @@ async function handleRejectSubmit(interaction, channelId) {
   if (applicant) {
     await safeDm(applicant.user, { embeds: [rejectionEmbed(reason, true)] });
   }
+  if (rec.kind === "nova") markNovaRejected(guild.id, rec.applicantId);
   ticketDelete(channelId);
   await interaction.editReply("Отказ с причиной отправлен заявителю в ЛС.");
   const ch = guild.channels.cache.get(channelId);
@@ -841,16 +875,22 @@ export async function handleTicketInteraction(interaction) {
       await safeReply(interaction, "Приём заявок Нова временно закрыт.");
       return true;
     }
-    await interaction.showModal(novaModal());
+    const left = novaCooldownLeftMs(interaction.guild.id, interaction.user.id);
+    if (left > 0) {
+      const days = Math.max(1, Math.ceil(left / 86_400_000));
+      await safeReply(interaction, `Повторная заявка доступна через **${days}** дн.`);
+      return true;
+    }
+    await interaction.showModal(novaModal(interaction.guild.id));
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:nova:m:app") {
-    await submitApplication(interaction, "nova", [
-      ["ВОЗРАСТ", interaction.fields.getTextInputValue("f1")],
-      ["ОНЛАЙН", interaction.fields.getTextInputValue("f2")],
-      ["В КАКИХ СЕМЬЯХ БЫЛИ", interaction.fields.getTextInputValue("f3")],
-      ["ОТКАТ СТРЕЛЬБЫ", interaction.fields.getTextInputValue("f4")],
-    ]);
+    const qs = novaQuestions(getConfig(interaction.guildId));
+    await submitApplication(
+      interaction,
+      "nova",
+      qs.map((q, i) => [q.label, interaction.fields.getTextInputValue(`f${i + 1}`)]),
+    );
     return true;
   }
 

@@ -3,6 +3,23 @@ import { getGuildConfigRaw, setGuildConfigRaw } from "./db.js";
 export const DEFAULT_KONTRAKT_RULES =
   "Здесь будут правила контрактов.\n\nЗадайте текст в панели бота: Контракты → Текст правил.";
 
+export const DEFAULT_NOVA_PANEL_TEXT =
+  "После подачи заявка отправляется на рассмотрение персоналу.\n" +
+  "> В среднем заявки обрабатываются в течение 1–2 дней\n\n" +
+  "Следите за статусом набора.\n" +
+  "**Если возможности заполнить заявку нет — набор закрыт.**\n" +
+  "Каждое открытие набора сопровождается тегами в этом канале.\n" +
+  "> В случае отказа можете подать заявку повторно через {cooldown} дн.\n\n" +
+  "**Статус набора:** {status}\n" +
+  "**Подать заявку:**";
+
+export const DEFAULT_NOVA_QUESTIONS = [
+  { label: "Возраст", placeholder: "Пример: 18" },
+  { label: "Онлайн", placeholder: "Пример: 4-6 часов" },
+  { label: "В каких семьях были", placeholder: "Пример: Killa, Kai, Black" },
+  { label: "Откат стрельбы", placeholder: "Ссылка на YouTube" },
+];
+
 export function defaultConfig() {
   return {
     moderatorRoleIds: [],
@@ -14,6 +31,9 @@ export function defaultConfig() {
     novaTicketPingRoleIds: [],
     novaAcceptRoleId: null,
     novaTicketGifUrl: null,
+    novaTicketPanelText: DEFAULT_NOVA_PANEL_TEXT,
+    novaTicketCooldownDays: 0,
+    novaTicketQuestions: DEFAULT_NOVA_QUESTIONS,
     acceptRoleIdsAcademy: [],
     acceptRoleIdsMain: [],
     botActionLogChannelId: null,
@@ -75,6 +95,12 @@ export function getConfig(guildId) {
     ...base.panelChannels,
     ...(raw?.panelChannels && typeof raw.panelChannels === "object" ? raw.panelChannels : {}),
   };
+  if (!Array.isArray(merged.novaTicketQuestions) || !merged.novaTicketQuestions.length) {
+    merged.novaTicketQuestions = DEFAULT_NOVA_QUESTIONS;
+  }
+  if (!String(merged.novaTicketPanelText || "").trim()) {
+    merged.novaTicketPanelText = DEFAULT_NOVA_PANEL_TEXT;
+  }
   return merged;
 }
 

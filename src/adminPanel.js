@@ -20,12 +20,13 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getConfig, setConfig } from "./config.js";
+import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_NOVA_QUESTIONS, getConfig, setConfig } from "./config.js";
 import {
   applicationPanel,
   buildApplicationEmbed,
   guildAcceptance,
   novaApplicationPayload,
+  novaQuestions,
   refreshNovaAppPanels,
   registerNovaAppPanel,
   setGuildAcceptance,
@@ -264,6 +265,8 @@ function novaTicketsAdminPayload(guild) {
   const cfg = getConfig(guild.id);
   const acc = guildAcceptance(guild.id);
   const gif = String(cfg.novaTicketGifUrl || "").trim();
+  const days = Math.max(0, Number(cfg.novaTicketCooldownDays || 0));
+  const qs = novaQuestions(cfg);
   const body =
     `Отдел настроек заявок: оформление, набор, роли и категория.\n\n` +
     `**GIF:** ${gif ? "установлен" : "не задан"}\n` +
@@ -271,7 +274,9 @@ function novaTicketsAdminPayload(guild) {
     `**Тег:** ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
     `**Роль после принятия:** ${cfg.novaAcceptRoleId ? `<@&${cfg.novaAcceptRoleId}>` : "—"}\n` +
     `**Категория:** ${fmtCh(cfg.novaTicketCategoryId)}\n` +
-    `**Набор:** ${acc.nova ? "открыт" : "закрыт"}`;
+    `**Набор:** ${acc.nova ? "открыт" : "закрыт"}\n` +
+    `**Повтор после отказа:** ${days} дн.\n` +
+    `**Вопросы:** ${qs.map((q) => q.label).join(" · ")}`;
 
   const container = new ContainerBuilder()
     .setAccentColor(COLOR_GREEN)
@@ -279,9 +284,12 @@ function novaTicketsAdminPayload(guild) {
     .addActionRowComponents(
       new ActionRowBuilder().addComponents(
         btn("c:adm:novagif", "GIF по ссылке", null, ButtonStyle.Secondary),
+        btn("c:adm:novatext", "Текст панели", null, ButtonStyle.Secondary),
+        btn("c:adm:novacd", "Кулдаун", null, ButtonStyle.Secondary),
         btn("c:adm:dept:nova", "Назад", null, ButtonStyle.Secondary),
       ),
       new ActionRowBuilder().addComponents(
+        btn("c:adm:novaq", "Настройка вопросов", null, ButtonStyle.Primary),
         acc.nova
           ? btn("c:adm:novaacc", "Выключить набор", null, ButtonStyle.Danger)
           : btn("c:adm:novaacc", "Включить набор", null, ButtonStyle.Success),
@@ -881,6 +889,86 @@ function novaGifModal(cfg) {
     );
 }
 
+function novaPanelTextModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:novatext")
+    .setTitle("Текст панели заявок")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("text")
+            .setLabel("Текст ({cooldown} и {status})")
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(3500)
+            .setRequired(true)
+            .setPlaceholder("Пустой текст вернёт стандартный."),
+          cfg.novaTicketPanelText || DEFAULT_NOVA_PANEL_TEXT,
+        ),
+      ),
+    );
+}
+
+function novaCooldownModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:novacd")
+    .setTitle("Кулдаун после отказа")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("days")
+            .setLabel("Дней до повторной заявки (0 = нет)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(3)
+            .setRequired(true)
+            .setPlaceholder("0"),
+          String(Math.max(0, Number(cfg.novaTicketCooldownDays || 0))),
+        ),
+      ),
+    );
+}
+
+function novaQuestionsModal(cfg) {
+  const qs = novaQuestions(cfg);
+  const modal = new ModalBuilder().setCustomId("c:cfg:m:novaq").setTitle("Вопросы заявки");
+  for (let i = 0; i < 4; i++) {
+    const q = qs[i] || DEFAULT_NOVA_QUESTIONS[i] || { label: "", placeholder: "" };
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId(`q${i + 1}`)
+            .setLabel(`Вопрос ${i + 1}`)
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(160)
+            .setRequired(i === 0)
+            .setPlaceholder("Название | подсказка в поле"),
+          [q.label, q.placeholder].filter(Boolean).join("\n"),
+        ),
+      ),
+    );
+  }
+  return modal;
+}
+
+function parseNovaQuestionField(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  if (lines.length >= 2) {
+    return {
+      label: lines[0].slice(0, 45),
+      placeholder: lines.slice(1).join(" ").slice(0, 100),
+    };
+  }
+  const pipe = lines[0].split("|").map((s) => s.trim()).filter(Boolean);
+  const label = (pipe[0] || "").slice(0, 45);
+  if (!label) return null;
+  return { label, placeholder: (pipe[1] || "").slice(0, 100) };
+}
+
 function apMinutesModal(cfg) {
   return new ModalBuilder()
     .setCustomId("c:cfg:m:ap")
@@ -1184,6 +1272,24 @@ export async function handleAdminInteraction(interaction) {
     uiSet(interaction, { dept: "nova", tab: "apps" });
     logAdminChange(interaction, "Админка: выбрал пункт", ["GIF по ссылке"]).catch(() => null);
     await interaction.showModal(novaGifModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novatext") {
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["Текст панели"]).catch(() => null);
+    await interaction.showModal(novaPanelTextModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novacd") {
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["Кулдаун"]).catch(() => null);
+    await interaction.showModal(novaCooldownModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novaq") {
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["Настройка вопросов"]).catch(() => null);
+    await interaction.showModal(novaQuestionsModal(getConfig(interaction.guildId)));
     return true;
   }
   if (interaction.isButton() && id === "c:adm:novaacc") {
@@ -1562,6 +1668,46 @@ export async function handleAdminInteraction(interaction) {
     uiSet(interaction, { dept: "nova", tab: "apps" });
     await refreshTopic(interaction, "apps");
     refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:novatext") {
+    const text = String(interaction.fields.getTextInputValue("text") || "").trim() || DEFAULT_NOVA_PANEL_TEXT;
+    setConfig(interaction.guildId, { novaTicketPanelText: text });
+    logAdminChange(interaction, "Админка: текст панели заявок Нова", [
+      `Длина: **${text.length}** символов`,
+      `Превью: ${text.slice(0, 120)}${text.length > 120 ? "…" : ""}`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:novacd") {
+    const days = Math.min(365, Math.max(0, Math.floor(Number(String(interaction.fields.getTextInputValue("days") || "0").replace(",", ".")) || 0)));
+    const before = Math.max(0, Number(getConfig(interaction.guildId).novaTicketCooldownDays || 0));
+    setConfig(interaction.guildId, { novaTicketCooldownDays: days });
+    logAdminChange(interaction, "Админка: кулдаун заявок Нова", [
+      `Дней после отказа: **${before}** → **${days}**`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:novaq") {
+    const questions = [1, 2, 3, 4]
+      .map((n) => parseNovaQuestionField(interaction.fields.getTextInputValue(`q${n}`)))
+      .filter(Boolean);
+    if (!questions.length) {
+      await safeReply(interaction, "Нужен хотя бы один вопрос: название на первой строке, подсказка на второй.");
+      return true;
+    }
+    setConfig(interaction.guildId, { novaTicketQuestions: questions });
+    logAdminChange(interaction, "Админка: вопросы заявок Нова", [
+      questions.map((q, i) => `${i + 1}. **${q.label}**`).join("\n"),
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    await refreshTopic(interaction, "apps");
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:ap") {
