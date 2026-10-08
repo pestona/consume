@@ -237,6 +237,8 @@ function deptNovaPayload(guild) {
     `Отдел **Нова в нове** — заявки со своей категорией, ролями и гифкой.\n\n` +
     `${mark(cfg.novaTicketCategoryId)} Категория · ${mark(cfg.novaTicketStaffRoleIds?.length)} рекрутеры\n` +
     `${mark(cfg.novaAcceptRoleId)} роль принятия · ${mark(cfg.novaTicketGifUrl)} гифка\n` +
+    `${mark(cfg.novaWelcomeChannelId)} приветствие: ${fmtCh(cfg.novaWelcomeChannelId)}\n` +
+    `Nova RP: ${fmtCh(cfg.panelChannels?.novaApps)} · 5 RP: ${fmtCh(cfg.panelChannels?.apps)}\n` +
     `Приём: **${acc.nova ? "открыт" : "закрыт"}**`;
 
   const container = new ContainerBuilder()
@@ -251,6 +253,14 @@ function deptNovaPayload(guild) {
       new ActionRowBuilder().addComponents(
         btn("c:adm:tab:panels", "Панели", "📤", ButtonStyle.Primary),
         btn("c:adm:tab:apps", "Заявки", "🎫"),
+      ),
+      channelSelect(
+        guild,
+        "c:cfg:c:novawelcome",
+        "Канал приветствия новых участников",
+        TEXT_TYPES,
+        cfg.novaWelcomeChannelId ? [cfg.novaWelcomeChannelId] : [],
+        1,
       ),
     );
 
@@ -274,6 +284,7 @@ function novaTicketsAdminPayload(guild) {
     `**Тег:** ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
     `**Роль после принятия:** ${cfg.novaAcceptRoleId ? `<@&${cfg.novaAcceptRoleId}>` : "—"}\n` +
     `**Категория:** ${fmtCh(cfg.novaTicketCategoryId)}\n` +
+    `**Приветствие:** ${fmtCh(cfg.novaWelcomeChannelId)}\n` +
     `**Набор:** ${acc.nova ? "открыт" : "закрыт"}\n` +
     `**Повтор после отказа:** ${days} дн.\n` +
     `**Вопросы:** ${qs.map((q) => q.label).join(" · ")}`;
@@ -1146,6 +1157,7 @@ const CHANNEL_PATCH = {
   "c:cfg:c:kontr": (v) => ({ kontraktChannelId: v[0] || null }),
   "c:cfg:c:archcat": (v) => ({ archiveCategoryId: v[0] || null }),
   "c:cfg:c:novatcat": (v) => ({ novaTicketCategoryId: v[0] || null }),
+  "c:cfg:c:novawelcome": (v) => ({ novaWelcomeChannelId: v[0] || null }),
 };
 
 const CFG_LABELS = {
@@ -1182,6 +1194,7 @@ const CFG_LABELS = {
   "c:cfg:r:archchain": "Цепочка рангов",
   "c:cfg:r:afkinact": "Роль инактива",
   "c:cfg:c:novatcat": "Категория тикетов Нова",
+  "c:cfg:c:novawelcome": "Канал приветствия Нова",
   "c:cfg:r:novastaff": "Роли рекрутера Нова",
   "c:cfg:r:novaping": "Роли тега Нова",
   "c:cfg:r:novaok": "Роль после принятия Нова",
@@ -1786,6 +1799,11 @@ export async function handleAdminInteraction(interaction) {
       `Было: ${fmt(oldVal)}`,
       `Стало: ${fmt(newVal)}`,
     ]).catch(() => null);
+    if (id === "c:cfg:c:novawelcome") {
+      uiSet(interaction, { dept: "nova" });
+      await showPanel(interaction, deptNovaPayload(interaction.guild));
+      return true;
+    }
     if (id.includes(":nova")) uiSet(interaction, { dept: "nova", tab: "apps" });
     await refreshTopic(interaction, uiGet(interaction).tab || "mods");
     return true;

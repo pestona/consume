@@ -26,6 +26,7 @@ import {
   COLOR_GREEN,
   COLOR_ORANGE,
   COLOR_RED,
+  MSK,
   channelSlug,
   embedFieldCodeblock,
   formatDateRu,
@@ -325,6 +326,77 @@ async function discoverNovaAppPanels(guild) {
     }
   } catch (err) {
     logJson("WARN", "nova panel discover", { error: String(err) });
+  }
+}
+
+const novaWelcomeSeen = new Map();
+
+function formatStampRu(date = new Date()) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: MSK,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(date)
+    .replace(",", "");
+}
+
+export async function onNovaMemberAdd(member) {
+  if (!member?.guild || member.user?.bot || member.pending) return;
+  const key = `${member.guild.id}:${member.id}`;
+  const now = Date.now();
+  const prev = novaWelcomeSeen.get(key) || 0;
+  if (now - prev < 15_000) return;
+  novaWelcomeSeen.set(key, now);
+  if (novaWelcomeSeen.size > 500) {
+    for (const [k, t] of novaWelcomeSeen) {
+      if (now - t > 60_000) novaWelcomeSeen.delete(k);
+    }
+  }
+
+  const cfg = getConfig(member.guild.id);
+  const chId = cfg.novaWelcomeChannelId;
+  if (!chId) return;
+  const ch =
+    member.guild.channels.cache.get(String(chId)) ||
+    (await member.guild.channels.fetch(String(chId)).catch(() => null));
+  if (!ch?.isTextBased?.()) return;
+
+  const novaAppsId = cfg.panelChannels?.novaApps;
+  const rpAppsId = cfg.panelChannels?.apps;
+  const lines = [`Приветствую тебя, ${member}!`];
+  if (novaAppsId || rpAppsId) {
+    lines.push("Заявку можно подать тут:");
+    if (novaAppsId) lines.push(`Nova RP - <#${novaAppsId}>`);
+    if (rpAppsId) lines.push(`5 RP - <#${rpAppsId}>`);
+  }
+  const content = lines.join("\n");
+
+  const emb = new EmbedBuilder()
+    .setColor(COLOR_BLUE)
+    .setTitle(`Добро пожаловать на сервер ${member.guild.name}!`)
+    .setFooter({ text: `ID участника: ${member.id} • ${formatStampRu()}` });
+  const gif = normalizeImageUrl(cfg.novaTicketGifUrl);
+  if (gif) emb.setImage(gif);
+
+  try {
+    await ch.send({
+      content,
+      embeds: [emb],
+      allowedMentions: { users: [member.id] },
+    });
+  } catch (err) {
+    logJson("ERROR", "nova welcome send", { guildId: member.guild.id, error: String(err) });
+  }
+}
+
+export async function onNovaMemberUpdate(oldMember, member) {
+  if (oldMember?.pending && member && !member.pending) {
+    await onNovaMemberAdd(member);
   }
 }
 

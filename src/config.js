@@ -36,6 +36,7 @@ export function defaultConfig() {
     novaTicketPanelText: DEFAULT_NOVA_PANEL_TEXT,
     novaTicketCooldownDays: 0,
     novaTicketQuestions: DEFAULT_NOVA_QUESTIONS,
+    novaWelcomeChannelId: null,
     acceptRoleIdsAcademy: [],
     acceptRoleIdsMain: [],
     botActionLogChannelId: null,
