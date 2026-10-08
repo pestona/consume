@@ -57,7 +57,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const panelUi = new Map();
 const TEXT_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement];
 const V2 = MessageFlags.IsComponentsV2;
-const V2_EPH = MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral;
 
 function bannerPath() {
   for (const name of ["panel.png", "banner.png", "ticket_banner.png"]) {
@@ -138,15 +137,37 @@ function btn(id, label, emoji, style = ButtonStyle.Secondary) {
   return b;
 }
 
-function v2Message(title, body, rows, { ephemeral = false } = {}) {
+function v2Message(title, body, rows) {
   const container = new ContainerBuilder()
     .setAccentColor(COLOR_DARK)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${title}\n${body}`));
   for (const row of rows) container.addActionRowComponents(row);
   return {
     components: [container],
-    flags: ephemeral ? V2_EPH : V2,
+    flags: V2,
   };
+}
+
+async function showPanel(interaction, payload) {
+  const data = { ...payload, flags: V2 };
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      if (interaction.isModalSubmit?.() && !interaction.message) {
+        await interaction.reply(data);
+        return;
+      }
+      await interaction.update(data);
+      return;
+    }
+    await interaction.editReply(data);
+  } catch {
+    try {
+      if (interaction.replied || interaction.deferred) await interaction.followUp(data);
+      else await interaction.reply(data);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function panelLine(cfg, key, label) {
@@ -603,10 +624,11 @@ function topicPayload(guild, tab, ui) {
       );
     rows.push(new ActionRowBuilder().addComponents(select));
   }
+  const homeId = ui?.dept === "nova" ? "c:adm:dept:nova" : "c:adm:dept:5rp";
   rows.push(
-    new ActionRowBuilder().addComponents(btn("c:adm:close", "Закрыть", null, ButtonStyle.Secondary)),
+    new ActionRowBuilder().addComponents(btn(homeId, "← Назад", null, ButtonStyle.Secondary)),
   );
-  return v2Message(t.title, t.body, rows, { ephemeral: true });
+  return v2Message(t.title, t.body, rows);
 }
 
 const PICK_META = {
@@ -722,7 +744,6 @@ function dropPickPayload(guild, tab, value) {
         ),
         back,
       ],
-      { ephemeral: true },
     );
   }
   if (value === "spam:to") {
@@ -735,7 +756,6 @@ function dropPickPayload(guild, tab, value) {
         ),
         back,
       ],
-      { ephemeral: true },
     );
   }
   if (value.startsWith("t:")) return null;
@@ -753,7 +773,7 @@ function dropPickPayload(guild, tab, value) {
       : meta.kind === "user"
         ? userSelect(meta.selectId, meta.title, ids, meta.max)
         : channelSelect(guild, meta.selectId, meta.title, meta.types, ids, meta.max);
-  return v2Message(meta.title, "Выбери ниже. Пустой выбор = сброс.", [row, back], { ephemeral: true });
+  return v2Message(meta.title, "Выбери ниже. Пустой выбор = сброс.", [row, back]);
 }
 
 async function openDept(interaction, dept) {
@@ -767,42 +787,18 @@ async function openDept(interaction, dept) {
     payload = dept5rpPayload(interaction.guild);
   }
   setConfig(interaction.guildId, { adminHubDept: dept === "nova" ? "nova" : "5rp" });
-  try {
-    await interaction.update(payload);
-    return ui;
-  } catch {
-    if (interaction.replied || interaction.deferred) await interaction.followUp({ ...payload, flags: V2_EPH });
-    else await interaction.reply({ ...payload, flags: V2_EPH });
-  }
+  await showPanel(interaction, payload);
   return ui;
 }
 
 async function openTopic(interaction, tab) {
   const ui = uiSet(interaction, { tab });
-  const payload = topicPayload(interaction.guild, tab, ui);
-  // Разделы всегда ephemeral — статичную админку в канале не затираем.
-  if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
-  else await interaction.reply(payload);
+  await showPanel(interaction, topicPayload(interaction.guild, tab, ui));
 }
 
 async function refreshTopic(interaction, tab) {
   const ui = uiSet(interaction, { tab });
-  const payload = topicPayload(interaction.guild, tab, ui);
-  try {
-    if (interaction.isModalSubmit?.()) {
-      if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
-      else await interaction.reply(payload);
-    } else {
-      await interaction.update(payload);
-    }
-  } catch {
-    try {
-      if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
-      else await interaction.reply(payload);
-    } catch {
-      /* ignore */
-    }
-  }
+  await showPanel(interaction, topicPayload(interaction.guild, tab, ui));
 }
 
 function maybeValue(builder, value) {
@@ -1152,16 +1148,6 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
 
-  if (interaction.isButton() && id === "c:adm:close") {
-    try {
-      await interaction.deferUpdate();
-      await interaction.message.delete().catch(() => null);
-    } catch {
-      await interaction.reply(v2Message("Админка", "Закрыто.", [], { ephemeral: true })).catch(() => null);
-    }
-    return true;
-  }
-
   const deptOpen = id.match(/^c:adm:dept:(5rp|nova)$/);
   if (interaction.isButton() && deptOpen) {
     const dept = deptOpen[1];
@@ -1246,13 +1232,8 @@ export async function handleAdminInteraction(interaction) {
           ),
           new ActionRowBuilder().addComponents(btn("c:adm:back:panels", "← Назад", null, ButtonStyle.Secondary)),
         ],
-        { ephemeral: true },
       );
-      try {
-        await interaction.update(payload);
-      } catch {
-        await refreshTopic(interaction, "panels");
-      }
+      await showPanel(interaction, payload);
     }
     return true;
   }
@@ -1268,12 +1249,7 @@ export async function handleAdminInteraction(interaction) {
         `Раздел: **${TAB_LABELS[tab] || tab}**`,
         `Пункт: **${MENU_LABELS[value] || value}**`,
       ]).catch(() => null);
-      const payload = dropPickPayload(interaction.guild, "panels", value);
-      try {
-        await interaction.update(payload);
-      } catch {
-        await interaction.followUp(payload).catch(() => null);
-      }
+      await showPanel(interaction, dropPickPayload(interaction.guild, "panels", value));
       return true;
     }
     if (value === "t:refresh") {
@@ -1419,11 +1395,7 @@ export async function handleAdminInteraction(interaction) {
         await safeReply(interaction, "Неизвестный пункт.");
         return true;
       }
-      try {
-        await interaction.update(payload);
-      } catch {
-        await interaction.followUp(payload).catch(() => null);
-      }
+      await showPanel(interaction, payload);
       return true;
     }
     return true;

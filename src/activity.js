@@ -28,7 +28,7 @@ const KINDS = new Set(["voice", "msg", "react"]);
 const KIND_LABEL = { voice: "Войс", msg: "Сообщения", react: "Реакции" };
 const PAGE_SIZE = 20;
 const MAX_ROLE_MEMBERS = 500;
-const V2_EPH = MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral;
+const V2 = MessageFlags.IsComponentsV2;
 
 /** @type {Record<string, Record<string, { voice?: number, msg?: number, react?: number }>>} */
 let store = {};
@@ -206,7 +206,7 @@ function statsPayload(title, body, rows) {
     .setAccentColor(COLOR_DARK)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${title}\n${body}`));
   for (const row of rows) container.addActionRowComponents(row);
-  return { components: [container], flags: V2_EPH };
+  return { components: [container], flags: V2 };
 }
 
 async function buildMemberRows(guild, role, kind) {
@@ -295,6 +295,10 @@ export async function renderStatsReport(guild, kind, roleId, page = 0) {
         .setCustomId("c:adm:stats:home")
         .setLabel("← К выбору активности")
         .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("c:adm:dept:5rp")
+        .setLabel("← Админка")
+        .setStyle(ButtonStyle.Secondary),
     ),
   );
 
@@ -305,7 +309,15 @@ export function statsHomePayload() {
   return statsPayload(
     "Статистика активности",
     "1) Выбери тип: **войс / сообщения / реакции**\n2) Выбери роль\n3) Получишь список людей с этой ролью и когда они были активны.\n\nДанные копятся с момента запуска бота (и пока бот онлайн).",
-    statsKindRows(),
+    [
+      ...statsKindRows(),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("c:adm:dept:5rp")
+          .setLabel("← Назад")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ],
   );
 }
 
@@ -324,12 +336,12 @@ export async function handleActivityAdmin(interaction) {
 
   if (interaction.isButton() && (id === "c:adm:tab:stats" || id === "c:adm:stats:home")) {
     const payload = statsHomePayload();
-    if (id === "c:adm:stats:home" && interaction.message) {
+    try {
       await interaction.update(payload);
-      return true;
+    } catch {
+      if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
+      else await interaction.reply(payload);
     }
-    if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
-    else await interaction.reply(payload);
     return true;
   }
 
