@@ -43,6 +43,7 @@ export async function canHandleTicket(interaction) {
   if (isGuildManager(member)) return true;
   const cfg = getConfig(interaction.guildId);
   if (hasAnyRole(member, cfg.ticketStaffRoleIds)) return true;
+  if (hasAnyRole(member, cfg.novaTicketStaffRoleIds)) return true;
   return hasAnyRole(member, cfg.moderatorRoleIds);
 }
 

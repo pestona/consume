@@ -56,19 +56,20 @@ function acceptanceState() {
 
 export function guildAcceptance(guildId) {
   const data = acceptanceState();
-  const g = data.guilds[String(guildId)] || { rp: true, vzp: true };
-  return { rp: g.rp !== false, vzp: g.vzp !== false };
+  const g = data.guilds[String(guildId)] || { rp: true, vzp: true, nova: true };
+  return { rp: g.rp !== false, vzp: g.vzp !== false, nova: g.nova !== false };
 }
 
 export function setGuildAcceptance(guildId, patch) {
   const data = acceptanceState();
   const key = String(guildId);
-  const g = data.guilds[key] || { rp: true, vzp: true };
+  const g = data.guilds[key] || { rp: true, vzp: true, nova: true };
   if (patch.rp !== undefined) g.rp = patch.rp;
   if (patch.vzp !== undefined) g.vzp = patch.vzp;
+  if (patch.nova !== undefined) g.nova = patch.nova;
   data.guilds[key] = g;
   kvSet("state", data);
-  return { rp: Boolean(g.rp), vzp: Boolean(g.vzp) };
+  return { rp: Boolean(g.rp), vzp: Boolean(g.vzp), nova: Boolean(g.nova) };
 }
 
 /** Минимальный номер следующего тикета (на чистом деплое не сбрасывается в 1). */
@@ -102,12 +103,41 @@ function ticketDelete(channelId) {
 function normalizeFields(kind, fields) {
   const values = (fields || []).map(([, v]) => String(v));
   const names =
-    kind === "rp" ? ["Возраст", "Онлайн", "Семьи", "Откуда", "Откат"] : ["Возраст", "Онлайн", "Семьи", "Откат"];
+    kind === "rp"
+      ? ["Возраст", "Онлайн", "Семьи", "Откуда", "Откат"]
+      : ["Возраст", "Онлайн", "Семьи", "Откат"];
   return names.map((name, i) => [name, values[i] || "—"]);
 }
 
+function ticketKindLabel(kind) {
+  if (kind === "rp") return "РП";
+  if (kind === "nova") return "Нова";
+  return "VZP";
+}
+
+function ticketDeptCfg(cfg, kind) {
+  if (kind === "nova") {
+    return {
+      categoryId: cfg.novaTicketCategoryId,
+      staffRoleIds: cfg.novaTicketStaffRoleIds || [],
+      pingRoleIds: cfg.novaTicketPingRoleIds || [],
+      academyRoleIds: cfg.novaAcceptRoleIdsAcademy || [],
+      mainRoleIds: cfg.novaAcceptRoleIdsMain || [],
+      settingsHint: "/panel → Нова → Заявки",
+    };
+  }
+  return {
+    categoryId: cfg.ticketCategoryId,
+    staffRoleIds: cfg.ticketStaffRoleIds || [],
+    pingRoleIds: cfg.ticketPingRoleIds || [],
+    academyRoleIds: cfg.acceptRoleIdsAcademy || [],
+    mainRoleIds: cfg.acceptRoleIdsMain || [],
+    settingsHint: "/panel → 5рп → Заявки",
+  };
+}
+
 function buildTicketEmbed({ kind, ticketNo, applicant, fields }) {
-  const label = kind === "rp" ? "РП" : "VZP";
+  const label = ticketKindLabel(kind);
   const emb = new EmbedBuilder()
     .setTitle(`Новая заявка: ${label} · #${ticketNo}`)
     .setColor(kind === "rp" ? COLOR_BLUE : COLOR_GREEN)
@@ -160,6 +190,66 @@ export function applicationPanel() {
           .setEmoji("📋"),
       ),
   );
+}
+
+function isHttpUrl(raw) {
+  try {
+    const u = new URL(String(raw || "").trim());
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function novaApplicationPanel() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("c:nova:app").setLabel("Подать заявку").setStyle(ButtonStyle.Success),
+  );
+}
+
+export function buildNovaApplicationEmbed(guildId) {
+  const { nova } = guildAcceptance(guildId);
+  const cfg = getConfig(guildId);
+  const emb = new EmbedBuilder()
+    .setColor(COLOR_DARK)
+    .setTitle("Оформление заявки в семью.")
+    .setDescription(
+      "После подачи заявка отправляется на рассмотрение персоналу.\n" +
+        "> В среднем заявки обрабатываются в течение 1–2 дней\n\n" +
+        "Следите за статусом набора.\n" +
+        "**Если возможности заполнить заявку нет — набор закрыт.**\n" +
+        "Каждое открытие набора сопровождается тегами в этом канале.\n" +
+        "> В случае отказа можете подать заявку повторно через 0 дн.\n\n" +
+        `**Статус набора:** ${nova ? "открыт" : "закрыт"}\n` +
+        "**Подать заявку:**",
+    );
+  const gif = String(cfg.novaTicketGifUrl || "").trim();
+  if (gif && isHttpUrl(gif)) emb.setImage(gif.slice(0, 2048));
+  return emb;
+}
+
+function novaModal() {
+  const modal = new ModalBuilder().setCustomId("c:nova:m:app").setTitle("Заявка в семью");
+  const fields = [
+    ["f1", "Возраст", "Пример: 18", TextInputStyle.Short, 200],
+    ["f2", "Онлайн", "Пример: 4-6 часов", TextInputStyle.Short, 200],
+    ["f3", "В каких семьях были", "Пример: Killa, Kai, Black", TextInputStyle.Short, 100],
+    ["f4", "Откат стрельбы", "Ссылка на YouTube", TextInputStyle.Paragraph, 500],
+  ];
+  for (const [id, label, placeholder, style, max] of fields) {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(id)
+          .setLabel(label)
+          .setPlaceholder(placeholder)
+          .setStyle(style)
+          .setMaxLength(max)
+          .setRequired(true),
+      ),
+    );
+  }
+  return modal;
 }
 
 export function buildApplicationEmbed(botUser) {
@@ -300,13 +390,17 @@ function interviewInviteEmbed(guildName, channel) {
 
 async function createTicketChannel(guild, applicant, { kind, ticketNo }) {
   const cfg = getConfig(guild.id);
-  const catId = cfg.ticketCategoryId;
+  const dept = ticketDeptCfg(cfg, kind);
+  const catId = dept.categoryId;
   let category = null;
   if (catId) {
     category = guild.channels.cache.get(String(catId)) || null;
     if (!category || category.type !== ChannelType.GuildCategory) {
-      throw new Error("Категория тикетов не настроена или это не категория. Откройте /panel → Настройки.");
+      throw new Error(`Категория тикетов не настроена или это не категория. Откройте ${dept.settingsHint}.`);
     }
+  }
+  if (kind === "nova" && (!category || category.type !== ChannelType.GuildCategory)) {
+    throw new Error(`Категория тикетов не настроена или это не категория. Откройте ${dept.settingsHint}.`);
   }
 
   const overwrites = [
@@ -328,7 +422,7 @@ async function createTicketChannel(guild, applicant, { kind, ticketNo }) {
       ],
     },
   ];
-  for (const rid of cfg.ticketStaffRoleIds || []) {
+  for (const rid of dept.staffRoleIds) {
     const role = guild.roles.cache.get(String(rid));
     if (role) {
       overwrites.push({
@@ -343,7 +437,7 @@ async function createTicketChannel(guild, applicant, { kind, ticketNo }) {
     }
   }
 
-  const pingIds = (cfg.ticketPingRoleIds?.length ? cfg.ticketPingRoleIds : cfg.ticketStaffRoleIds) || [];
+  const pingIds = (dept.pingRoleIds.length ? dept.pingRoleIds : dept.staffRoleIds) || [];
   const roleMentions = [];
   const allowedRoleIds = [];
   for (const rid of pingIds) {
@@ -408,7 +502,7 @@ async function submitApplication(interaction, kind, fields) {
     await interaction.editReply(
       err?.message?.includes("Категория")
         ? err.message
-        : "Не удалось создать тикет-канал. Проверьте права бота и настройки в /panel.",
+        : "Не удалось создать тикет-канал. Проверьте права бота и настройки заявок в /panel.",
     );
   }
 }
@@ -437,12 +531,13 @@ async function handleAccept(interaction, channelId, track) {
   const rec = locked.rec;
   const guild = interaction.guild;
   const cfg = getConfig(guild.id);
-  const roleIds = track === "academy" ? cfg.acceptRoleIdsAcademy : cfg.acceptRoleIdsMain;
+  const dept = ticketDeptCfg(cfg, rec.kind);
+  const roleIds = track === "academy" ? dept.academyRoleIds : dept.mainRoleIds;
   if (!roleIds?.length) {
     rec.phase = "interview";
     ticketPut(channelId, rec);
     await interaction.editReply(
-      "Роли принятия не заданы. Откройте **/panel → Заявки** и выберите роли академии/основы.",
+      `Роли принятия не заданы. Откройте **${dept.settingsHint}** и выберите роли академии/основы.`,
     );
     return;
   }
@@ -608,6 +703,28 @@ export async function handleTicketInteraction(interaction) {
       ["ОНЛАЙН", interaction.fields.getTextInputValue("f2")],
       ["В КАКИХ СЕМЬЯХ БЫЛИ", interaction.fields.getTextInputValue("f3")],
       ["ОТКАТ С ВЗП/DM", interaction.fields.getTextInputValue("f4")],
+    ]);
+    return true;
+  }
+
+  if (interaction.isButton() && id === "c:nova:app") {
+    if (!interaction.guild) {
+      await safeReply(interaction, "Используйте на сервере.");
+      return true;
+    }
+    if (!guildAcceptance(interaction.guild.id).nova) {
+      await safeReply(interaction, "Приём заявок Нова временно закрыт.");
+      return true;
+    }
+    await interaction.showModal(novaModal());
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:nova:m:app") {
+    await submitApplication(interaction, "nova", [
+      ["ВОЗРАСТ", interaction.fields.getTextInputValue("f1")],
+      ["ОНЛАЙН", interaction.fields.getTextInputValue("f2")],
+      ["В КАКИХ СЕМЬЯХ БЫЛИ", interaction.fields.getTextInputValue("f3")],
+      ["ОТКАТ СТРЕЛЬБЫ", interaction.fields.getTextInputValue("f4")],
     ]);
     return true;
   }

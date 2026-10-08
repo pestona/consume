@@ -9,6 +9,12 @@ export function defaultConfig() {
     ticketStaffRoleIds: [],
     ticketPingRoleIds: [],
     ticketCategoryId: null,
+    novaTicketCategoryId: null,
+    novaTicketStaffRoleIds: [],
+    novaTicketPingRoleIds: [],
+    novaAcceptRoleIdsAcademy: [],
+    novaAcceptRoleIdsMain: [],
+    novaTicketGifUrl: null,
     acceptRoleIdsAcademy: [],
     acceptRoleIdsMain: [],
     botActionLogChannelId: null,
@@ -57,6 +63,7 @@ export function defaultConfig() {
       voice: null,
       archive: null,
       afk: null,
+      novaApps: null,
     },
   };
 }
