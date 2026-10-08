@@ -13,11 +13,13 @@ export const DEFAULT_NOVA_PANEL_TEXT =
   "**Статус набора:** {status}\n" +
   "**Подать заявку:**";
 
+export const MAX_NOVA_QUESTIONS = 5;
+
 export const DEFAULT_NOVA_QUESTIONS = [
-  { label: "Возраст", placeholder: "Пример: 18" },
-  { label: "Онлайн", placeholder: "Пример: 4-6 часов" },
-  { label: "В каких семьях были", placeholder: "Пример: Killa, Kai, Black" },
-  { label: "Откат стрельбы", placeholder: "Ссылка на YouTube" },
+  { label: "Возраст", placeholder: "Пример: 18", long: false },
+  { label: "Онлайн", placeholder: "Пример: 4-6 часов", long: false },
+  { label: "В каких семьях были", placeholder: "Пример: Killa, Kai, Black", long: false },
+  { label: "Откат стрельбы", placeholder: "Ссылка на YouTube", long: true },
 ];
 
 export function defaultConfig() {

@@ -20,7 +20,7 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_NOVA_QUESTIONS, getConfig, setConfig } from "./config.js";
+import { DEFAULT_NOVA_PANEL_TEXT, MAX_NOVA_QUESTIONS, getConfig, setConfig } from "./config.js";
 import {
   applicationPanel,
   buildApplicationEmbed,
@@ -648,6 +648,7 @@ function topicStatus(guild, tab, ui) {
 }
 
 function topicPayload(guild, tab, ui) {
+  if (tab === "novaq") return novaQuestionsEditorPayload(guild, ui);
   if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
   const rows = [];
@@ -929,44 +930,124 @@ function novaCooldownModal(cfg) {
     );
 }
 
-function novaQuestionsModal(cfg) {
-  const qs = novaQuestions(cfg);
-  const modal = new ModalBuilder().setCustomId("c:cfg:m:novaq").setTitle("Вопросы заявки");
-  for (let i = 0; i < 4; i++) {
-    const q = qs[i] || DEFAULT_NOVA_QUESTIONS[i] || { label: "", placeholder: "" };
-    modal.addComponents(
+function novaQuestionIndex(ui, qs) {
+  const n = qs.length;
+  if (!n) return 0;
+  const i = Number(ui?.novaQIndex);
+  if (!Number.isInteger(i) || i < 0) return 0;
+  return Math.min(i, n - 1);
+}
+
+function dumpNovaQuestions(qs) {
+  return qs.map((q) => ({
+    label: q.label,
+    placeholder: q.placeholder || "",
+    long: Boolean(q.long),
+  }));
+}
+
+function parseLongFlag(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return false;
+  return /^(да|yes|y|1|long|длин|paragraph)/i.test(s);
+}
+
+function novaQuestionFormModal(mode, q) {
+  const edit = mode === "edit";
+  return new ModalBuilder()
+    .setCustomId(edit ? "c:cfg:m:novaqedit" : "c:cfg:m:novaqadd")
+    .setTitle(edit ? "Изменить вопрос" : "Добавить вопрос")
+    .addComponents(
       new ActionRowBuilder().addComponents(
         maybeValue(
           new TextInputBuilder()
-            .setCustomId(`q${i + 1}`)
-            .setLabel(`Вопрос ${i + 1}`)
-            .setStyle(TextInputStyle.Paragraph)
-            .setMaxLength(160)
-            .setRequired(i === 0)
-            .setPlaceholder("Название | подсказка в поле"),
-          [q.label, q.placeholder].filter(Boolean).join("\n"),
+            .setCustomId("label")
+            .setLabel("Название вопроса")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(45)
+            .setRequired(true)
+            .setPlaceholder("Например: Возраст"),
+          q?.label,
+        ),
+      ),
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("placeholder")
+            .setLabel("Подсказка в поле")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(100)
+            .setRequired(false)
+            .setPlaceholder("Например: 18"),
+          q?.placeholder,
+        ),
+      ),
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("long")
+            .setLabel("Длинный ответ? (да/нет)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(12)
+            .setRequired(true)
+            .setPlaceholder("нет"),
+          q?.long ? "да" : "нет",
         ),
       ),
     );
-  }
-  return modal;
 }
 
-function parseNovaQuestionField(raw) {
-  const text = String(raw || "").trim();
-  if (!text) return null;
-  const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  if (!lines.length) return null;
-  if (lines.length >= 2) {
-    return {
-      label: lines[0].slice(0, 45),
-      placeholder: lines.slice(1).join(" ").slice(0, 100),
-    };
-  }
-  const pipe = lines[0].split("|").map((s) => s.trim()).filter(Boolean);
-  const label = (pipe[0] || "").slice(0, 45);
-  if (!label) return null;
-  return { label, placeholder: (pipe[1] || "").slice(0, 100) };
+function novaQuestionsEditorPayload(guild, ui) {
+  const cfg = getConfig(guild.id);
+  const qs = novaQuestions(cfg);
+  const selected = novaQuestionIndex(ui, qs);
+  const cur = qs[selected];
+  const lines = qs.map((q, i) => {
+    const mark = i === selected ? "→" : "•";
+    const kind = q.long ? "длинный" : "короткий";
+    const hint = q.placeholder ? ` · ${q.placeholder}` : "";
+    return `${mark} **${i + 1}. ${q.label}** — ${kind}${hint}`;
+  });
+  const body =
+    `В анкете можно держать от **1** до **${MAX_NOVA_QUESTIONS}** вопросов.\n` +
+    `Выбери вопрос в списке, затем измени, удали или подвинь.\n\n` +
+    `${lines.join("\n")}\n\n` +
+    `Выбран: **${cur?.label || "—"}**`;
+
+  const pick = new StringSelectMenuBuilder()
+    .setCustomId("c:adm:novaqpick")
+    .setPlaceholder("Выберите вопрос")
+    .addOptions(
+      qs.map((q, i) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(`${i + 1}. ${q.label}`.slice(0, 100))
+          .setValue(String(i))
+          .setDescription(
+            `${q.long ? "длинный" : "короткий"}${q.placeholder ? ` · ${q.placeholder}` : ""}`.slice(0, 100),
+          )
+          .setDefault(i === selected),
+      ),
+    );
+
+  const addBtn = btn("c:adm:novaqadd", "Добавить", null, ButtonStyle.Success);
+  if (qs.length >= MAX_NOVA_QUESTIONS) addBtn.setDisabled(true);
+  const editBtn = btn("c:adm:novaqedit", "Изменить", null, ButtonStyle.Primary);
+  const delBtn = btn("c:adm:novaqdel", "Удалить", null, ButtonStyle.Danger);
+  if (qs.length <= 1) delBtn.setDisabled(true);
+  const upBtn = btn("c:adm:novaqup", "Выше", null, ButtonStyle.Secondary);
+  if (selected <= 0) upBtn.setDisabled(true);
+  const downBtn = btn("c:adm:novaqdn", "Ниже", null, ButtonStyle.Secondary);
+  if (selected >= qs.length - 1) downBtn.setDisabled(true);
+
+  return v2Message("Вопросы заявки", body, [
+    new ActionRowBuilder().addComponents(pick),
+    new ActionRowBuilder().addComponents(addBtn, editBtn, delBtn),
+    new ActionRowBuilder().addComponents(
+      upBtn,
+      downBtn,
+      btn("c:adm:novaqback", "Назад", null, ButtonStyle.Secondary),
+    ),
+  ]);
 }
 
 function apMinutesModal(cfg) {
@@ -1287,9 +1368,79 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
   if (interaction.isButton() && id === "c:adm:novaq") {
-    uiSet(interaction, { dept: "nova", tab: "apps" });
+    const ui = uiSet(interaction, { dept: "nova", tab: "novaq", novaQIndex: 0 });
     logAdminChange(interaction, "Админка: выбрал пункт", ["Настройка вопросов"]).catch(() => null);
-    await interaction.showModal(novaQuestionsModal(getConfig(interaction.guildId)));
+    await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, ui));
+    return true;
+  }
+  if (interaction.isStringSelectMenu() && id === "c:adm:novaqpick") {
+    const ui = uiSet(interaction, { dept: "nova", tab: "novaq", novaQIndex: Number(interaction.values[0]) || 0 });
+    await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, ui));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novaqback") {
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novaqadd") {
+    const qs = novaQuestions(getConfig(interaction.guildId));
+    if (qs.length >= MAX_NOVA_QUESTIONS) {
+      await safeReply(interaction, `Максимум ${MAX_NOVA_QUESTIONS} вопросов — лимит формы Discord.`);
+      return true;
+    }
+    uiSet(interaction, { dept: "nova", tab: "novaq" });
+    await interaction.showModal(novaQuestionFormModal("add", { label: "", placeholder: "", long: false }));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novaqedit") {
+    const cfg = getConfig(interaction.guildId);
+    const qs = novaQuestions(cfg);
+    const idx = novaQuestionIndex(uiGet(interaction), qs);
+    const q = qs[idx];
+    if (!q) {
+      await safeReply(interaction, "Сначала выберите вопрос в списке.");
+      return true;
+    }
+    uiSet(interaction, { dept: "nova", tab: "novaq", novaQIndex: idx });
+    await interaction.showModal(novaQuestionFormModal("edit", q));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novaqdel") {
+    const qs = dumpNovaQuestions(novaQuestions(getConfig(interaction.guildId)));
+    if (qs.length <= 1) {
+      await safeReply(interaction, "Нужен хотя бы один вопрос.");
+      return true;
+    }
+    const idx = novaQuestionIndex(uiGet(interaction), qs);
+    const removed = qs.splice(idx, 1)[0];
+    setConfig(interaction.guildId, { novaTicketQuestions: qs });
+    logAdminChange(interaction, "Админка: удалил вопрос заявки Нова", [
+      `Вопрос: **${removed?.label || idx + 1}**`,
+    ]).catch(() => null);
+    const ui = uiSet(interaction, {
+      dept: "nova",
+      tab: "novaq",
+      novaQIndex: Math.min(idx, qs.length - 1),
+    });
+    await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, ui));
+    return true;
+  }
+  if (interaction.isButton() && (id === "c:adm:novaqup" || id === "c:adm:novaqdn")) {
+    const qs = dumpNovaQuestions(novaQuestions(getConfig(interaction.guildId)));
+    const idx = novaQuestionIndex(uiGet(interaction), qs);
+    const swap = id === "c:adm:novaqup" ? idx - 1 : idx + 1;
+    if (swap < 0 || swap >= qs.length) {
+      await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, uiGet(interaction)));
+      return true;
+    }
+    [qs[idx], qs[swap]] = [qs[swap], qs[idx]];
+    setConfig(interaction.guildId, { novaTicketQuestions: qs });
+    logAdminChange(interaction, "Админка: порядок вопросов заявок Нова", [
+      qs.map((q, i) => `${i + 1}. **${q.label}**`).join("\n"),
+    ]).catch(() => null);
+    const ui = uiSet(interaction, { dept: "nova", tab: "novaq", novaQIndex: swap });
+    await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, ui));
     return true;
   }
   if (interaction.isButton() && id === "c:adm:novaacc") {
@@ -1694,20 +1845,40 @@ export async function handleAdminInteraction(interaction) {
     refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
     return true;
   }
-  if (interaction.isModalSubmit() && id === "c:cfg:m:novaq") {
-    const questions = [1, 2, 3, 4]
-      .map((n) => parseNovaQuestionField(interaction.fields.getTextInputValue(`q${n}`)))
-      .filter(Boolean);
-    if (!questions.length) {
-      await safeReply(interaction, "Нужен хотя бы один вопрос: название на первой строке, подсказка на второй.");
+  if (interaction.isModalSubmit() && (id === "c:cfg:m:novaqadd" || id === "c:cfg:m:novaqedit")) {
+    const label = String(interaction.fields.getTextInputValue("label") || "").trim().slice(0, 45);
+    if (!label) {
+      await safeReply(interaction, "Название вопроса не может быть пустым.");
       return true;
     }
-    setConfig(interaction.guildId, { novaTicketQuestions: questions });
-    logAdminChange(interaction, "Админка: вопросы заявок Нова", [
-      questions.map((q, i) => `${i + 1}. **${q.label}**`).join("\n"),
-    ]).catch(() => null);
-    uiSet(interaction, { dept: "nova", tab: "apps" });
-    await refreshTopic(interaction, "apps");
+    const nextQ = {
+      label,
+      placeholder: String(interaction.fields.getTextInputValue("placeholder") || "").trim().slice(0, 100),
+      long: parseLongFlag(interaction.fields.getTextInputValue("long")),
+    };
+    const qs = dumpNovaQuestions(novaQuestions(getConfig(interaction.guildId)));
+    let selected = novaQuestionIndex(uiGet(interaction), qs);
+    if (id === "c:cfg:m:novaqadd") {
+      if (qs.length >= MAX_NOVA_QUESTIONS) {
+        await safeReply(interaction, `Максимум ${MAX_NOVA_QUESTIONS} вопросов — лимит формы Discord.`);
+        return true;
+      }
+      qs.push(nextQ);
+      selected = qs.length - 1;
+      logAdminChange(interaction, "Админка: добавил вопрос заявки Нова", [`**${nextQ.label}**`]).catch(() => null);
+    } else {
+      if (!qs[selected]) {
+        await safeReply(interaction, "Сначала выберите вопрос в списке.");
+        return true;
+      }
+      qs[selected] = nextQ;
+      logAdminChange(interaction, "Админка: изменил вопрос заявки Нова", [
+        `${selected + 1}. **${nextQ.label}**`,
+      ]).catch(() => null);
+    }
+    setConfig(interaction.guildId, { novaTicketQuestions: qs });
+    const ui = uiSet(interaction, { dept: "nova", tab: "novaq", novaQIndex: selected });
+    await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, ui));
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:ap") {

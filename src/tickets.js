@@ -17,7 +17,7 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { kvGet, kvSet } from "./db.js";
-import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_NOVA_QUESTIONS, getConfig } from "./config.js";
+import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_NOVA_QUESTIONS, MAX_NOVA_QUESTIONS, getConfig } from "./config.js";
 import { canHandleTicket, canModerate } from "./perms.js";
 import {
   COLOR_BLUE,
@@ -109,13 +109,19 @@ function ticketDelete(channelId) {
 
 export function novaQuestions(cfg) {
   const list = Array.isArray(cfg?.novaTicketQuestions) ? cfg.novaTicketQuestions : [];
-  const out = list
+  const labeled = list
     .map((q) => ({
       label: String(q?.label || "").trim().slice(0, 45),
       placeholder: String(q?.placeholder || "").trim().slice(0, 100),
+      long: q?.long,
     }))
     .filter((q) => q.label);
-  return out.length ? out.slice(0, 4) : DEFAULT_NOVA_QUESTIONS;
+  const src = labeled.length ? labeled.slice(0, MAX_NOVA_QUESTIONS) : DEFAULT_NOVA_QUESTIONS;
+  return src.map((q, i, arr) => ({
+    label: q.label,
+    placeholder: q.placeholder || "",
+    long: typeof q.long === "boolean" ? q.long : i === arr.length - 1,
+  }));
 }
 
 function normalizeFields(kind, fields, cfg) {
@@ -348,15 +354,14 @@ function novaModal(guildId) {
   const qs = novaQuestions(getConfig(guildId));
   const modal = new ModalBuilder().setCustomId("c:nova:m:app").setTitle("Заявка в семью");
   qs.forEach((q, i) => {
-    const long = i === qs.length - 1;
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId(`f${i + 1}`)
           .setLabel(q.label.slice(0, 45) || `Вопрос ${i + 1}`)
           .setPlaceholder((q.placeholder || " ").slice(0, 100))
-          .setStyle(long ? TextInputStyle.Paragraph : TextInputStyle.Short)
-          .setMaxLength(long ? 500 : 200)
+          .setStyle(q.long ? TextInputStyle.Paragraph : TextInputStyle.Short)
+          .setMaxLength(q.long ? 500 : 200)
           .setRequired(true),
       ),
     );
