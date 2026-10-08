@@ -46,6 +46,7 @@ import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } 
 import { logAdminChange } from "./schedulers.js";
 import {
   COLOR_DARK,
+  COLOR_GREEN,
   isGuildManager,
   mentionChannels,
   mentionRoles,
@@ -259,6 +260,60 @@ function hubPayload(guild) {
   return dept5rpPayload(guild);
 }
 
+function novaTicketsAdminPayload(guild) {
+  const cfg = getConfig(guild.id);
+  const acc = guildAcceptance(guild.id);
+  const gif = String(cfg.novaTicketGifUrl || "").trim();
+  const body =
+    `Отдел настроек заявок: оформление, набор, роли и категория.\n\n` +
+    `**GIF:** ${gif ? "установлен" : "не задан"}\n` +
+    `**Рекрутеры:** ${mentionRoles(cfg.novaTicketStaffRoleIds)}\n` +
+    `**Тег:** ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
+    `**Роль после принятия:** ${cfg.novaAcceptRoleId ? `<@&${cfg.novaAcceptRoleId}>` : "—"}\n` +
+    `**Категория:** ${fmtCh(cfg.novaTicketCategoryId)}\n` +
+    `**Набор:** ${acc.nova ? "открыт" : "закрыт"}`;
+
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_GREEN)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Тикеты\n${body}`))
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:novagif", "GIF по ссылке", null, ButtonStyle.Secondary),
+        btn("c:adm:dept:nova", "Назад", null, ButtonStyle.Secondary),
+      ),
+      new ActionRowBuilder().addComponents(
+        acc.nova
+          ? btn("c:adm:novaacc", "Выключить набор", null, ButtonStyle.Danger)
+          : btn("c:adm:novaacc", "Включить набор", null, ButtonStyle.Success),
+      ),
+      roleSelect(
+        guild,
+        "c:cfg:r:novastaff",
+        "Роли рекрутера (кто принимает заявки)",
+        cfg.novaTicketStaffRoleIds,
+        25,
+      ),
+      roleSelect(guild, "c:cfg:r:novaping", "Роли тега новой заявки", cfg.novaTicketPingRoleIds, 25),
+      roleSelect(
+        guild,
+        "c:cfg:r:novaok",
+        "Роль после принятия",
+        cfg.novaAcceptRoleId ? [cfg.novaAcceptRoleId] : [],
+        1,
+      ),
+      channelSelect(
+        guild,
+        "c:cfg:c:novatcat",
+        "Категория тикетов",
+        [ChannelType.GuildCategory],
+        cfg.novaTicketCategoryId ? [cfg.novaTicketCategoryId] : [],
+        1,
+      ),
+    );
+
+  return { components: [container], flags: V2 };
+}
+
 function topicStatus(guild, tab, ui) {
   const cfg = getConfig(guild.id);
   const acc = guildAcceptance(guild.id);
@@ -302,29 +357,6 @@ function topicStatus(guild, tab, ui) {
     };
   }
   if (tab === "apps") {
-    if (ui?.dept === "nova") {
-      const gif = String(cfg.novaTicketGifUrl || "").trim();
-      return {
-        title: "Заявки · Нова в нове",
-        body:
-          `${mark(cfg.novaTicketCategoryId)} Категория: ${fmtCh(cfg.novaTicketCategoryId)}\n` +
-          `${mark(cfg.novaTicketStaffRoleIds?.length)} Рекрутеры: ${mentionRoles(cfg.novaTicketStaffRoleIds)}\n` +
-          `${mark(cfg.novaTicketPingRoleIds?.length)} Тег: ${mentionRoles(cfg.novaTicketPingRoleIds)}\n` +
-          `Роль после принятия: ${cfg.novaAcceptRoleId ? `<@&${cfg.novaAcceptRoleId}>` : "—"}\n` +
-          `Гифка: ${gif ? "задана" : "❌ нет"}\n` +
-          `Приём: ${statusLine(acc.nova)}\n\n` +
-          "Рекрутеров и тег можно выбрать несколько. После принятия выдаётся одна роль.",
-        options: [
-          { label: "Категория тикетов", value: "c:novatcat", emoji: "📁", description: "Где создавать тикеты" },
-          { label: "Роли рекрутера", value: "r:novastaff", emoji: "🛡️", description: "Несколько — кто видит тикет" },
-          { label: "Роли тега", value: "r:novaping", emoji: "📣", description: "Несколько — кого пинговать" },
-          { label: "Роль после принятия", value: "r:novaok", emoji: "✅", description: "Одна роль при принятии" },
-          { label: "Гифка панели", value: "t:novagif", emoji: "🖼️", description: "Ссылка на gif/png" },
-          { label: "Вкл/выкл приём", value: "t:novaacc", emoji: "📝", description: "Открыть или закрыть набор" },
-        ],
-        placeholder: "Что настроить в заявках Нова?",
-      };
-    }
     return {
       title: "Заявки",
       body:
@@ -608,6 +640,7 @@ function topicStatus(guild, tab, ui) {
 }
 
 function topicPayload(guild, tab, ui) {
+  if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
   const rows = [];
   if (t.options?.length) {
@@ -1147,6 +1180,29 @@ export async function handleAdminInteraction(interaction) {
     return true;
   }
 
+  if (interaction.isButton() && id === "c:adm:novagif") {
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    logAdminChange(interaction, "Админка: выбрал пункт", ["GIF по ссылке"]).catch(() => null);
+    await interaction.showModal(novaGifModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:novaacc") {
+    if (!(await canModerate(interaction))) {
+      await safeReply(interaction, "Нет прав переключать приём заявок.");
+      return true;
+    }
+    uiSet(interaction, { dept: "nova", tab: "apps" });
+    const acc = guildAcceptance(interaction.guildId);
+    setGuildAcceptance(interaction.guildId, { nova: !acc.nova });
+    const next = guildAcceptance(interaction.guildId);
+    logAdminChange(interaction, "Админка: изменил приём заявок", [
+      `Нова: **${acc.nova ? "открыт" : "закрыт"}** → **${next.nova ? "открыт" : "закрыт"}**`,
+    ]).catch(() => null);
+    await refreshTopic(interaction, "apps");
+    refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+
   const deptOpen = id.match(/^c:adm:dept:(5rp|nova)$/);
   if (interaction.isButton() && deptOpen) {
     const dept = deptOpen[1];
@@ -1429,6 +1485,7 @@ export async function handleAdminInteraction(interaction) {
       `Было: ${fmt(oldVal)}`,
       `Стало: ${fmt(newVal)}`,
     ]).catch(() => null);
+    if (id.includes(":nova")) uiSet(interaction, { dept: "nova", tab: "apps" });
     await refreshTopic(interaction, uiGet(interaction).tab || "mods");
     return true;
   }
@@ -1472,6 +1529,7 @@ export async function handleAdminInteraction(interaction) {
       `Было: ${fmt(oldVal)}`,
       `Стало: ${fmt(newVal)}`,
     ]).catch(() => null);
+    if (id.includes(":nova")) uiSet(interaction, { dept: "nova", tab: "apps" });
     await refreshTopic(interaction, uiGet(interaction).tab || "mods");
     return true;
   }
@@ -1501,6 +1559,7 @@ export async function handleAdminInteraction(interaction) {
     logAdminChange(interaction, "Админка: гифка заявок Нова", [
       raw ? `Ссылка: ${raw.slice(0, 120)}` : "Гифка снята",
     ]).catch(() => null);
+    uiSet(interaction, { dept: "nova", tab: "apps" });
     await refreshTopic(interaction, "apps");
     refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
     return true;
