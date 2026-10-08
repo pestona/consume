@@ -24,9 +24,10 @@ import { getConfig, setConfig } from "./config.js";
 import {
   applicationPanel,
   buildApplicationEmbed,
-  buildNovaApplicationEmbed,
   guildAcceptance,
-  novaApplicationPanel,
+  novaApplicationPayload,
+  refreshNovaAppPanels,
+  registerNovaAppPanel,
   setGuildAcceptance,
 } from "./tickets.js";
 import { buildMapsEmbed, mapsPanel } from "./maps.js";
@@ -1079,10 +1080,8 @@ async function publishTo(interaction, kind, channel) {
       await ch.send({ embeds: [emb], components: [applicationPanel()], files });
       rememberPanelChannel(interaction.guild.id, "apps", ch.id);
     } else if (kind === "novaapps") {
-      await ch.send({
-        embeds: [buildNovaApplicationEmbed(interaction.guild.id)],
-        components: [novaApplicationPanel()],
-      });
+      const msg = await ch.send(novaApplicationPayload(interaction.guild.id));
+      registerNovaAppPanel(interaction.guild.id, ch.id, msg.id);
       rememberPanelChannel(interaction.guild.id, "novaApps", ch.id);
     } else if (kind === "maps") {
       await ch.send({ embeds: [buildMapsEmbed()], components: [mapsPanel()] });
@@ -1268,6 +1267,7 @@ export async function handleAdminInteraction(interaction) {
         `Нова: **${acc.nova ? "открыт" : "закрыт"}** → **${next.nova ? "открыт" : "закрыт"}**`,
       ]).catch(() => null);
       await refreshTopic(interaction, "apps");
+      refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
       return true;
     }
     if (value === "t:novagif") {
@@ -1502,6 +1502,7 @@ export async function handleAdminInteraction(interaction) {
       raw ? `Ссылка: ${raw.slice(0, 120)}` : "Гифка снята",
     ]).catch(() => null);
     await refreshTopic(interaction, "apps");
+    refreshNovaAppPanels(interaction.client, interaction.guildId).catch(() => null);
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:ap") {

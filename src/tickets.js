@@ -3,11 +3,16 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
+  ContainerBuilder,
   EmbedBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
+  MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -195,13 +200,40 @@ export function applicationPanel() {
   );
 }
 
-function isHttpUrl(raw) {
+function normalizeImageUrl(raw) {
+  let s = String(raw || "").trim().replace(/^<|>$/g, "").trim();
+  const found = s.match(/https?:\/\/[^\s<>"'`]+/i);
+  if (!found) return null;
+  let url = found[0].replace(/[),.;]+$/g, "");
   try {
-    const u = new URL(String(raw || "").trim());
-    return u.protocol === "http:" || u.protocol === "https:";
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   } catch {
-    return false;
+    return null;
   }
+  return url.slice(0, 2048);
+}
+
+function novaAppPanelsStore() {
+  const data = kvGet("novaAppPanels") || {};
+  data.byGuild = data.byGuild && typeof data.byGuild === "object" ? data.byGuild : {};
+  return data;
+}
+
+function saveNovaAppPanels(data) {
+  kvSet("novaAppPanels", { byGuild: data.byGuild });
+}
+
+export function registerNovaAppPanel(guildId, channelId, messageId) {
+  const data = novaAppPanelsStore();
+  const gid = String(guildId);
+  const list = Array.isArray(data.byGuild[gid]) ? data.byGuild[gid] : [];
+  const mid = String(messageId);
+  data.byGuild[gid] = [
+    ...list.filter((p) => String(p.messageId) !== mid),
+    { channelId: String(channelId), messageId: mid },
+  ].slice(-20);
+  saveNovaAppPanels(data);
 }
 
 export function novaApplicationPanel() {
@@ -210,25 +242,79 @@ export function novaApplicationPanel() {
   );
 }
 
-export function buildNovaApplicationEmbed(guildId) {
+export function novaApplicationPayload(guildId) {
   const { nova } = guildAcceptance(guildId);
   const cfg = getConfig(guildId);
-  const emb = new EmbedBuilder()
-    .setColor(COLOR_DARK)
-    .setTitle("Оформление заявки в семью.")
-    .setDescription(
-      "После подачи заявка отправляется на рассмотрение персоналу.\n" +
-        "> В среднем заявки обрабатываются в течение 1–2 дней\n\n" +
-        "Следите за статусом набора.\n" +
-        "**Если возможности заполнить заявку нет — набор закрыт.**\n" +
-        "Каждое открытие набора сопровождается тегами в этом канале.\n" +
-        "> В случае отказа можете подать заявку повторно через 0 дн.\n\n" +
-        `**Статус набора:** ${nova ? "открыт" : "закрыт"}\n` +
-        "**Подать заявку:**",
+  const gif = normalizeImageUrl(cfg.novaTicketGifUrl);
+  const body =
+    `## Оформление заявки в семью.\n` +
+    `После подачи заявка отправляется на рассмотрение персоналу.\n` +
+    `> В среднем заявки обрабатываются в течение 1–2 дней\n\n` +
+    `Следите за статусом набора.\n` +
+    `**Если возможности заполнить заявку нет — набор закрыт.**\n` +
+    `Каждое открытие набора сопровождается тегами в этом канале.\n` +
+    `> В случае отказа можете подать заявку повторно через 0 дн.\n\n` +
+    `**Статус набора:** ${nova ? "открыт" : "закрыт"}\n` +
+    `**Подать заявку:**`;
+
+  const container = new ContainerBuilder().setAccentColor(COLOR_DARK);
+  if (gif) {
+    container.addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(gif)),
     );
-  const gif = String(cfg.novaTicketGifUrl || "").trim();
-  if (gif && isHttpUrl(gif)) emb.setImage(gif.slice(0, 2048));
-  return emb;
+  }
+  container
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+    .addActionRowComponents(novaApplicationPanel());
+  return { components: [container], flags: MessageFlags.IsComponentsV2 };
+}
+
+async function discoverNovaAppPanels(guild) {
+  const cfg = getConfig(guild.id);
+  const chId = cfg.panelChannels?.novaApps;
+  if (!chId) return;
+  const ch = guild.channels.cache.get(String(chId));
+  if (!ch?.messages) return;
+  try {
+    const msgs = await ch.messages.fetch({ limit: 40 });
+    for (const msg of msgs.values()) {
+      if (msg.author?.id !== guild.client.user?.id) continue;
+      const raw = JSON.stringify(msg.components || []);
+      if (raw.includes("c:nova:app")) registerNovaAppPanel(guild.id, ch.id, msg.id);
+    }
+  } catch (err) {
+    logJson("WARN", "nova panel discover", { error: String(err) });
+  }
+}
+
+export async function refreshNovaAppPanels(client, guildId) {
+  const guild = client.guilds.cache.get(String(guildId));
+  if (!guild) return;
+  await discoverNovaAppPanels(guild);
+  const data = novaAppPanelsStore();
+  const list = Array.isArray(data.byGuild[String(guildId)]) ? data.byGuild[String(guildId)] : [];
+  const payload = novaApplicationPayload(guildId);
+  let changed = false;
+  const next = [];
+  for (const panel of list) {
+    const ch = guild.channels.cache.get(panel.channelId);
+    if (!ch?.isTextBased?.()) {
+      changed = true;
+      continue;
+    }
+    try {
+      const msg = await ch.messages.fetch(panel.messageId);
+      await msg.edit({ content: null, embeds: [], ...payload });
+      next.push(panel);
+    } catch (err) {
+      if (err?.code === 10008 || err?.code === 50001) changed = true;
+      else next.push(panel);
+    }
+  }
+  if (changed || next.length !== list.length) {
+    data.byGuild[String(guildId)] = next;
+    saveNovaAppPanels(data);
+  }
 }
 
 function novaModal() {
