@@ -41,6 +41,7 @@ function ticketsState() {
   const data = kvGet("tickets") || {};
   data.byChannel = data.byChannel || data.by_channel || {};
   data.counter = data.counter || {};
+  data.novaCounter = data.novaCounter && typeof data.novaCounter === "object" ? data.novaCounter : {};
   data.pending = data.pending || {};
   data.novaRejectAt = data.novaRejectAt && typeof data.novaRejectAt === "object" ? data.novaRejectAt : {};
   return data;
@@ -50,6 +51,7 @@ function saveTickets(data) {
   kvSet("tickets", {
     byChannel: data.byChannel,
     counter: data.counter,
+    novaCounter: data.novaCounter || {},
     pending: data.pending,
     novaRejectAt: data.novaRejectAt || {},
   });
@@ -82,9 +84,15 @@ export function setGuildAcceptance(guildId, patch) {
 /** Минимальный номер следующего тикета (на чистом деплое не сбрасывается в 1). */
 const MIN_NEXT_TICKET_NO = 4169;
 
-function nextTicketNo(guildId) {
+function nextTicketNo(guildId, kind) {
   const data = ticketsState();
   const key = String(guildId);
+  if (kind === "nova") {
+    const n = Math.max(Number(data.novaCounter[key] || 0) + 1, 1);
+    data.novaCounter[key] = n;
+    saveTickets(data);
+    return n;
+  }
   const n = Math.max(Number(data.counter[key] || 0) + 1, MIN_NEXT_TICKET_NO);
   data.counter[key] = n;
   saveTickets(data);
@@ -613,7 +621,7 @@ async function submitApplication(interaction, kind, fields) {
     }
   }
 
-  const ticketNo = nextTicketNo(interaction.guild.id);
+  const ticketNo = nextTicketNo(interaction.guild.id, kind);
   const norm = normalizeFields(kind, fields, cfg);
   const emb = buildTicketEmbed({ kind, ticketNo, applicant, fields: norm });
 
