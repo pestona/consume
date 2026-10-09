@@ -53,6 +53,8 @@ export const DEFAULT_VZP_QUESTIONS = [
 export function defaultConfig() {
   return {
     moderatorRoleIds: [],
+    panelManagerRoleIds: [],
+    panelPublisherRoleIds: [],
     ticketStaffRoleIds: [],
     ticketPingRoleIds: [],
     ticketCategoryId: null,

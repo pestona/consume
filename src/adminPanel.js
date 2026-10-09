@@ -66,7 +66,14 @@ import { tempVoicePanelPayload } from "./tempVoice.js";
 import { buildArchivePublicPanel } from "./archive.js";
 import { afkPanelPayload, registerAfkPanel } from "./afk.js";
 import { createChannelBackup, getChannelBackupMeta, restoreChannelBackup } from "./channelBackup.js";
-import { canEditSettings, canModerate, canOpenPanel, canPostKontrakt, canSpam } from "./perms.js";
+import {
+  canEditSettings,
+  canModerate,
+  canOpenPanel,
+  canPostKontrakt,
+  canPublishPanels,
+  canSpam,
+} from "./perms.js";
 import { logAdminChange } from "./schedulers.js";
 import {
   COLOR_BLUE,
@@ -224,7 +231,6 @@ function dept5rpPayload(guild) {
       ),
       new ActionRowBuilder().addComponents(
         btn("c:adm:tab:logs", "Логи", "📋"),
-        btn("c:adm:tab:mods", "Модераторы", "🛡️"),
         btn("c:adm:tab:rooms", "Комнаты", "🔊"),
         btn("c:adm:tab:archive", "Архив", "📁"),
         btn("c:adm:tab:protect", "Защита", "🚨", ButtonStyle.Danger),
@@ -737,7 +743,9 @@ function topicStatus(guild, tab, ui) {
       body:
         `**Модераторы**\n` +
         `Модераторы бота: ${roleOrEmpty(cfg.moderatorRoleIds)}\n` +
-        `Доступ к сбору: ${roleOrEmpty(cfg.sborAccessRoleIds) || "как модераторы"}\n\n` +
+        `Полная настройка /panel: ${roleOrEmpty(cfg.panelManagerRoleIds)}\n` +
+        `Публикация панелей: ${mentionRoles(cfg.panelPublisherRoleIds) || "как модераторы"}\n` +
+        `Доступ к сбору: ${mentionRoles(cfg.sborAccessRoleIds) || "как модераторы"}\n\n` +
         `**Заявки**\n` +
         `Категория: ${fmtCh(cfg.ticketCategoryId)}\n` +
         `Стафф: ${roleOrEmpty(cfg.ticketStaffRoleIds)}\n` +
@@ -795,12 +803,69 @@ function topicStatus(guild, tab, ui) {
   return { title: "Админка", body: "Выбери раздел на главной.", options: [], placeholder: "…" };
 }
 
+const ACCESS_ROLE_ACTIONS = [
+  { value: "r:mod", label: "Открытие панели / модераторы", key: "moderatorRoleIds", selectId: "c:cfg:r:mod", emoji: "🛡️" },
+  { value: "r:panelmgr", label: "Полная настройка /panel", key: "panelManagerRoleIds", selectId: "c:cfg:r:panelmgr", emoji: "⚙️" },
+  { value: "r:panelpub", label: "Публикация панелей", key: "panelPublisherRoleIds", selectId: "c:cfg:r:panelpub", emoji: "📤" },
+  { value: "r:sboraccess", label: "Создание и модерация сборов", key: "sborAccessRoleIds", selectId: "c:cfg:r:sboraccess", emoji: "📋" },
+  { value: "r:staff", label: "Рассмотрение заявок 5RP", key: "ticketStaffRoleIds", selectId: "c:cfg:r:staff", emoji: "🎫" },
+  { value: "r:novastaff", label: "Рассмотрение заявок Nova", key: "novaTicketStaffRoleIds", selectId: "c:cfg:r:novastaff", emoji: "🌌" },
+  { value: "r:apmgr", label: "Управление автопарком", key: "autoparkManagerRoleIds", selectId: "c:cfg:r:apmgr", emoji: "🚗" },
+  { value: "r:kpost", label: "Публикация контрактов", key: "kontraktPostRoleIds", selectId: "c:cfg:r:kpost", emoji: "📜" },
+  { value: "r:kmgr", label: "Пикнул / Отказ контрактов", key: "kontraktManagerRoleIds", selectId: "c:cfg:r:kmgr", emoji: "✅" },
+  { value: "r:spam", label: "Запуск рассылки", key: "spamCommandRoleIds", selectId: "c:cfg:r:spam", emoji: "📣" },
+  { value: "r:archmod", label: "Модерация архива", key: "archiveModRoleIds", selectId: "c:cfg:r:archmod", emoji: "📁" },
+];
+
+function accessRolesPayload(guild, ui) {
+  const cfg = getConfig(guild.id);
+  const selected =
+    ACCESS_ROLE_ACTIONS.find((action) => action.value === ui?.accessRoleAction) ||
+    ACCESS_ROLE_ACTIONS[0];
+  const value = (ids, fallback = "не выбраны") => mentionRoles(ids) || fallback;
+  const lines = [
+    `Открытие панели / модераторы: ${value(cfg.moderatorRoleIds)}`,
+    `Полная настройка **/panel**: ${value(cfg.panelManagerRoleIds)}`,
+    `Публикация панелей: ${value(cfg.panelPublisherRoleIds, "как модераторы")}`,
+    `Создание и модерация сборов: ${value(cfg.sborAccessRoleIds, "как модераторы")}`,
+    `Рассмотрение заявок 5RP: ${value(cfg.ticketStaffRoleIds, "модераторы")}`,
+    `Рассмотрение заявок Nova: ${value(cfg.novaTicketStaffRoleIds, "модераторы")}`,
+    `Управление автопарком: ${value(cfg.autoparkManagerRoleIds)}`,
+    `Публикация контрактов: ${value(cfg.kontraktPostRoleIds, "как модераторы")}`,
+    `Пикнул / Отказ контрактов: ${value(cfg.kontraktManagerRoleIds, "как модераторы")}`,
+    `Запуск рассылки: ${value(cfg.spamCommandRoleIds)}`,
+    `Модерация архива: ${value(cfg.archiveModRoleIds, "как стафф / модераторы")}`,
+  ];
+  const actionSelect = new StringSelectMenuBuilder()
+    .setCustomId("c:adm:cfg:sbor")
+    .setPlaceholder("Какое действие настроить?")
+    .addOptions(
+      ACCESS_ROLE_ACTIONS.map((action) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(action.label)
+          .setValue(action.value)
+          .setEmoji(action.emoji)
+          .setDefault(action.value === selected.value),
+      ),
+    );
+  return v2Message(
+    "Доступ по ролям",
+    `Администраторы сервера всегда имеют полный доступ.\n\n${lines.join("\n")}\n\n**Настройка:** ${selected.label}`,
+    [
+      new ActionRowBuilder().addComponents(actionSelect),
+      roleSelect(guild, selected.selectId, `Роли: ${selected.label}`.slice(0, 150), cfg[selected.key], 25),
+      new ActionRowBuilder().addComponents(btn("c:adm:dept:5rp", "← Назад", null, ButtonStyle.Secondary)),
+    ],
+  );
+}
+
 function topicPayload(guild, tab, ui) {
   if (tab === "novaq") return novaQuestionsEditorPayload(guild, ui);
   if (tab === "fiveq") return fiveRpQuestionsEditorPayload(guild, ui);
   if (tab === "welcome") return welcomeAdminPayload(guild);
   if (tab === "autoroles") return reactionRolesAdminPayload(guild);
   if (tab === "cars") return autoparkAdminPayload(guild);
+  if (tab === "sbor") return accessRolesPayload(guild, ui);
   if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
   if (tab === "apps") return fiveRpTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
@@ -1591,6 +1656,8 @@ const ROLE_PATCH = {
   "c:cfg:r:acad": (v) => ({ acceptRoleIdsAcademy: v }),
   "c:cfg:r:main": (v) => ({ acceptRoleIdsMain: v }),
   "c:cfg:r:mod": (v) => ({ moderatorRoleIds: v }),
+  "c:cfg:r:panelmgr": (v) => ({ panelManagerRoleIds: v }),
+  "c:cfg:r:panelpub": (v) => ({ panelPublisherRoleIds: v }),
   "c:cfg:r:sboraccess": (v) => ({ sborAccessRoleIds: v }),
   "c:cfg:r:spam": (v) => ({ spamCommandRoleIds: v }),
   "c:cfg:r:apmgr": (v) => ({ autoparkManagerRoleIds: v }),
@@ -1638,6 +1705,8 @@ const CFG_LABELS = {
   "c:cfg:r:acad": "Роли академии",
   "c:cfg:r:main": "Роли основы",
   "c:cfg:r:mod": "Модераторы бота",
+  "c:cfg:r:panelmgr": "Полная настройка /panel",
+  "c:cfg:r:panelpub": "Публикация панелей",
   "c:cfg:r:sboraccess": "Доступ к /сбор",
   "c:cfg:r:spam": "Кто может спамить",
   "c:cfg:r:apmgr": "Менеджеры автопарка",
@@ -1690,6 +1759,8 @@ const MENU_LABELS = {
   "spam:to": "Запустить спам",
   "c:log": "Канал логов",
   "r:mod": "Роли модераторов",
+  "r:panelmgr": "Полная настройка /panel",
+  "r:panelpub": "Публикация панелей",
   "r:sboraccess": "Роли доступа к сбору",
   "t:rpacc": "Вкл/выкл приём РП",
   "t:vzpacc": "Вкл/выкл приём VZP",
@@ -2162,7 +2233,7 @@ export async function handleAdminInteraction(interaction) {
       uiSet(interaction, { dept: saved });
     }
     if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "afk", "protect", "autoroles"].includes(tab) && !(await canEditSettings(interaction))) {
-      await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
+      await safeReply(interaction, "Нет роли полной настройки /panel.");
       return true;
     }
     if (tab === "spam" && !(await canSpam(interaction)) && !(await canEditSettings(interaction))) {
@@ -2187,6 +2258,10 @@ export async function handleAdminInteraction(interaction) {
   const sendPanel = id.match(/^c:adm:send:(.+)$/);
   if (interaction.isChannelSelectMenu() && sendPanel) {
     const kind = sendPanel[1];
+    if (!(await canPublishPanels(interaction))) {
+      await safeReply(interaction, "У твоих ролей нет доступа к публикации панелей.");
+      return true;
+    }
     if (kind === "reactionroles" && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Панель авторолей может публиковать только владелец или участник с правом «Управлять сервером».");
       return true;
@@ -2239,6 +2314,12 @@ export async function handleAdminInteraction(interaction) {
     const tab = cfgSelect[1];
     const value = interaction.values[0];
     uiSet(interaction, { tab });
+
+    if (tab === "sbor" && ACCESS_ROLE_ACTIONS.some((action) => action.value === value)) {
+      uiSet(interaction, { dept: "5rp", tab: "sbor", accessRoleAction: value });
+      await refreshTopic(interaction, "sbor");
+      return true;
+    }
 
     if (value.startsWith("pub:")) {
       logAdminChange(interaction, "Админка: выбрал пункт", [

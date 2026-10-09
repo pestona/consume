@@ -4,7 +4,9 @@ import { hasAnyRole, isGuildManager, resolveMember } from "./util.js";
 export async function canEditSettings(interaction) {
   const member = await resolveMember(interaction);
   if (!member) return false;
-  return isGuildManager(member);
+  if (isGuildManager(member)) return true;
+  const cfg = getConfig(interaction.guildId);
+  return hasAnyRole(member, cfg.panelManagerRoleIds);
 }
 
 export async function canOpenPanel(interaction) {
@@ -12,11 +14,22 @@ export async function canOpenPanel(interaction) {
   if (!member) return false;
   if (isGuildManager(member)) return true;
   const cfg = getConfig(interaction.guildId);
-  return hasAnyRole(member, cfg.moderatorRoleIds);
+  return hasAnyRole(member, [...(cfg.moderatorRoleIds || []), ...(cfg.panelManagerRoleIds || [])]);
 }
 
 export async function canModerate(interaction) {
   return canOpenPanel(interaction);
+}
+
+export async function canPublishPanels(interaction) {
+  const member = await resolveMember(interaction);
+  if (!member) return false;
+  if (isGuildManager(member)) return true;
+  const cfg = getConfig(interaction.guildId);
+  return hasAnyRole(member, [
+    ...roleIdsOrModeration(cfg, cfg.panelPublisherRoleIds),
+    ...(cfg.panelManagerRoleIds || []),
+  ]);
 }
 
 /** Кто может /сбор и управлять сборами. Пустой список = как модераторы бота. */
