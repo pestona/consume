@@ -56,7 +56,12 @@ import {
   kontraktChannelRestrictionMessage,
   kontraktPanelRows,
 } from "./kontrakt.js";
-import { buildAutoparkEmbed, autoparkPanelRows, registerPanel } from "./autopark.js";
+import {
+  autoparkAdminCars,
+  buildAutoparkEmbed,
+  autoparkPanelRows,
+  registerPanel,
+} from "./autopark.js";
 import { tempVoicePanelPayload } from "./tempVoice.js";
 import { buildArchivePublicPanel } from "./archive.js";
 import { afkPanelPayload, registerAfkPanel } from "./afk.js";
@@ -381,6 +386,80 @@ function novaTicketsAdminPayload(guild) {
         [ChannelType.GuildCategory],
         cfg.novaTicketCategoryId ? [cfg.novaTicketCategoryId] : [],
         1,
+      ),
+    );
+
+  return { components: [container], flags: V2 };
+}
+
+function autoparkAdminPayload(guild) {
+  const cfg = getConfig(guild.id);
+  const cars = autoparkAdminCars(guild.id);
+  const free = cars.filter((car) => !car.reservedBy);
+  const busy = cars.filter((car) => car.reservedBy);
+  const lines = cars.slice(0, 20).map((car, index) => {
+    const access = car.roleIds?.length
+      ? ` · ${car.roleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`
+      : "";
+    const state = car.reservedBy
+      ? `🔴 <@${car.reservedBy}>${car.reservedUntilTs ? ` до <t:${car.reservedUntilTs}:R>` : ""}`
+      : "🟢 свободна";
+    return `${index + 1}. **${car.label}** — ${state}${access}`;
+  });
+  if (cars.length > 20) lines.push(`… ещё ${cars.length - 20}`);
+
+  const body =
+    `Общее время аренды: **${cfg.autoparkReserveMinutes || 60} мин.**\n` +
+    `Машин: **${cars.length}** · свободно: **${free.length}** · занято: **${busy.length}**\n` +
+    `Менеджеры: ${mentionRoles(cfg.autoparkManagerRoleIds) || "только Manage Server"}\n` +
+    `${panelLine(cfg, "autopark", "Публичная панель")}\n\n` +
+    (lines.length ? lines.join("\n") : "Машин пока нет.");
+
+  const editButton = btn("c:ap:chg", "Изменить", null, ButtonStyle.Primary);
+  const deleteButton = btn("c:ap:del", "Удалить", null, ButtonStyle.Danger);
+  const releaseButton = btn("c:ap:rel", "Освободить", null, ButtonStyle.Secondary);
+  if (!cars.length) {
+    editButton.setDisabled(true);
+    deleteButton.setDisabled(true);
+  }
+  if (!busy.length) releaseButton.setDisabled(true);
+
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_BLUE)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`## Настройка автопарка\n${body}`),
+    )
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        btn("c:ap:add", "Добавить", null, ButtonStyle.Success),
+        editButton,
+        deleteButton,
+        releaseButton,
+        btn(
+          "c:adm:apmins",
+          `Время: ${cfg.autoparkReserveMinutes || 60} мин.`,
+          null,
+          ButtonStyle.Secondary,
+        ),
+      ),
+      roleSelect(
+        guild,
+        "c:cfg:r:apmgr",
+        "Менеджеры автопарка",
+        cfg.autoparkManagerRoleIds,
+        25,
+      ),
+      new ActionRowBuilder().addComponents(
+        new ChannelSelectMenuBuilder()
+          .setCustomId("c:adm:send:ap")
+          .setPlaceholder("Отправить публичную панель")
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setChannelTypes(...TEXT_TYPES),
+      ),
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:back:cars", "Обновить", "🔄", ButtonStyle.Secondary),
+        btn("c:adm:dept:5rp", "Назад", null, ButtonStyle.Secondary),
       ),
     );
 
@@ -721,6 +800,7 @@ function topicPayload(guild, tab, ui) {
   if (tab === "fiveq") return fiveRpQuestionsEditorPayload(guild, ui);
   if (tab === "welcome") return welcomeAdminPayload(guild);
   if (tab === "autoroles") return reactionRolesAdminPayload(guild);
+  if (tab === "cars") return autoparkAdminPayload(guild);
   if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
   if (tab === "apps") return fiveRpTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
@@ -1763,6 +1843,16 @@ export async function handleAdminInteraction(interaction) {
 
   if (!(await canOpenPanel(interaction))) {
     await safeReply(interaction, "Нет доступа к панели.");
+    return true;
+  }
+
+  if (interaction.isButton() && id === "c:adm:apmins") {
+    if (!(await canEditSettings(interaction))) {
+      await safeReply(interaction, "Настройки машин может менять только владелец или участник с правом «Управлять сервером».");
+      return true;
+    }
+    uiSet(interaction, { dept: "5rp", tab: "cars" });
+    await interaction.showModal(apMinutesModal(getConfig(interaction.guildId)));
     return true;
   }
 

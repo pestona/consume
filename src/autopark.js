@@ -128,6 +128,10 @@ export function buildAutoparkEmbed(guild) {
   return autoparkEmbed(guild);
 }
 
+export function autoparkAdminCars(guildId) {
+  return loadCars(guildId);
+}
+
 function claim(guildId, carKey, userId, minutes) {
   const now = Math.floor(Date.now() / 1000);
   const car = getAutoparkCar(guildId, carKey);
