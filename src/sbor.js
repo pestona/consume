@@ -7,6 +7,7 @@ import {
 } from "discord.js";
 import { kvGet, kvSet, getSbor, setSbor, getAllSbors } from "./db.js";
 import { canUseSbor, memberCanUseSbor } from "./perms.js";
+import { trackSborParticipation } from "./activity.js";
 import {
   COLOR_GREEN,
   COLOR_RED,
@@ -606,6 +607,7 @@ export async function onSborMessage(message) {
 
     // "-" — выписать и всегда сохранить (чтобы старый + больше не считался)
     signOutUser(fresh, uid);
+    trackSborParticipation(message.guild.id, uid, messageId, null);
     setSbor(messageId, fresh);
     await refreshPanel(message.client, messageId);
   });
@@ -634,6 +636,7 @@ export async function onSborMessageDelete(message) {
         null;
       if (uid && (fresh.main.includes(uid) || fresh.subs.includes(uid) || fresh.reserve.includes(uid))) {
         signOutUser(fresh, uid);
+        trackSborParticipation(channel.guild.id, uid, panelId, null);
         setSbor(panelId, fresh);
         await refreshPanel(message.client, panelId);
       }
@@ -645,6 +648,7 @@ export async function onSborMessageDelete(message) {
     if (!uid) return;
 
     signOutUser(fresh, uid);
+    trackSborParticipation(channel.guild.id, uid, panelId, null);
     setSbor(panelId, fresh);
     await refreshPanel(message.client, panelId);
   });
@@ -683,6 +687,7 @@ export async function onSborMessageUpdate(oldMessage, newMessage) {
     // + → - (или убрали плюс)
     if (wasPlus && newText !== "+") {
       signOutUser(fresh, uid);
+      trackSborParticipation(newMessage.guild.id, uid, panelId, null);
       setSbor(panelId, fresh);
       await refreshPanel(newMessage.client, panelId);
       if (newText !== "-") {
@@ -748,6 +753,7 @@ export async function onSborReaction(reaction, user, added) {
         removeFromAll(state, targetId);
         state.reserve.push(targetId);
         state.left = state.left.filter((id) => id !== targetId);
+        trackSborParticipation(msg.guild.id, targetId, panelId, null);
         setSbor(panelId, state);
         await refreshPanel(reaction.client, panelId);
       }
@@ -768,6 +774,12 @@ export async function onSborReaction(reaction, user, added) {
       state.subs.push(targetId);
     }
 
+    trackSborParticipation(
+      msg.guild.id,
+      targetId,
+      panelId,
+      state.main.includes(targetId) ? "main" : "sub",
+    );
     setSbor(panelId, state);
     await refreshPanel(reaction.client, panelId);
   });

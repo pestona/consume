@@ -49,54 +49,52 @@ function autoparkEmbed(guild) {
   const cars = loadCars(guild.id);
   const free = cars.filter((c) => !c.reservedBy);
   const busy = cars.filter((c) => c.reservedBy);
-  const now = Math.floor(Date.now() / 1000);
 
   const carLine = (c) => {
-    const parts = [`• ${c.label}`];
-    if (c.note) parts.push(c.note);
-    if (c.roleIds?.length) {
-      const mentions = c.roleIds.filter((rid) => guild.roles.cache.has(String(rid))).map((rid) => `<@&${rid}>`);
-      if (mentions.length) parts.push(mentions.join(" "));
-    }
+    const mentions = (c.roleIds || [])
+      .filter((roleId) => guild.roles.cache.has(String(roleId)))
+      .map((roleId) => `<@&${roleId}>`);
+    const parts = [
+      `🚙 **${c.label}**`,
+      `> Номер: \`${c.key}\``,
+      `> Доступ: ${mentions.length ? mentions.join(" ") : "всем"}`,
+    ];
+    if (c.note) parts.push(`> ${c.note}`);
+    if (c.reservedBy) parts.push(`> Занял: <@${c.reservedBy}>`);
+    if (c.reservedUntilTs) parts.push(`> Освободится: <t:${c.reservedUntilTs}:R>`);
     return parts.join("\n");
   };
 
-  const linesBusy = busy.slice(0, 20).map((c) => {
-    let left = "";
-    if (c.reservedUntilTs != null) {
-      const mins = Math.max(0, Math.floor((c.reservedUntilTs - now) / 60));
-      left = mins >= 60 ? `(через ${Math.max(1, Math.round(mins / 60))} часа)` : `(через ${mins} мин)`;
-    }
-    const who = c.reservedBy ? ` <@${c.reservedBy}>` : "";
-    return left ? `• ${c.label}${who}\n${left}` : `• ${c.label}${who}`;
-  });
-
   return new EmbedBuilder()
-    .setTitle("🚗 Автопарк: Car")
-    .setDescription("Актуальный статус автомобилей.")
-    .setColor(COLOR_DARK)
-    .setTimestamp(new Date())
-    .addFields(
-      {
-        name: `🟢 Свободные (${free.length})`,
-        value: embedLinesValue(free.slice(0, 40).map(carLine)),
-        inline: false,
-      },
-      { name: `🔴 Занятые (${busy.length})`, value: embedLinesValue(linesBusy), inline: false },
+    .setTitle("🚙 Автопарк семьи")
+    .setDescription(
+      `Всего машин: **${cars.length}**　Свободно: **${free.length}**　Занято: **${busy.length}**\n` +
+        "Нажмите нужное действие и выберите автомобиль.",
     )
-    .setFooter({ text: " " });
+    .setColor(COLOR_DARK)
+    .addFields(
+      { name: `🟢 СВОБОДНЫЕ — ${free.length}`, value: embedLinesValue(free.map(carLine), "Свободных машин нет"), inline: true },
+      { name: `🔴 ЗАНЯТЫЕ — ${busy.length}`, value: embedLinesValue(busy.map(carLine), "Занятых машин нет"), inline: true },
+    )
+    .setFooter({ text: "Статусы обновляются автоматически" });
 }
 
-export function autoparkPanelRows() {
+export function autoparkPanelRows(guildId = null) {
+  const cars = guildId ? loadCars(guildId) : [];
+  const hasBusyCars = cars.some((car) => car.reservedBy);
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("c:ap:take").setLabel("Занять авто").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("c:ap:rel").setLabel("Освободить авто").setStyle(ButtonStyle.Danger),
       new ButtonBuilder()
-        .setCustomId("c:ap:edit")
-        .setLabel("Изменить список")
-        .setStyle(ButtonStyle.Secondary)
-        .setEmoji("✏️"),
+        .setCustomId("c:ap:take")
+        .setLabel("Занять автомобиль")
+        .setEmoji("🚗")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId("c:ap:rel")
+        .setLabel("Освободить автомобиль")
+        .setEmoji("↩️")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(guildId !== null && !hasBusyCars),
     ),
   ];
 }
@@ -113,7 +111,7 @@ export async function refreshAutoparkPanels(client, guildId) {
     }
     try {
       const msg = await ch.messages.fetch(panel.messageId);
-      await msg.edit({ embeds: [emb], components: autoparkPanelRows() });
+      await msg.edit({ embeds: [emb], components: autoparkPanelRows(guildId) });
     } catch (err) {
       if (err?.code === 10008 || err?.code === 50001) removeAutoparkPanel(panel.messageId);
     }
@@ -174,8 +172,8 @@ function addModal() {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("key")
-          .setLabel("Ключ (уникальный ID)")
-          .setPlaceholder("Например: PESTONA01")
+          .setLabel("Номер / уникальный ID")
+          .setPlaceholder("Например: PESTONA01 или 123")
           .setStyle(TextInputStyle.Short)
           .setMaxLength(60)
           .setRequired(true),
@@ -183,8 +181,8 @@ function addModal() {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("label")
-          .setLabel("Как показывать в списке")
-          .setPlaceholder("BMW M5 H90 LCI - PESTONA01")
+          .setLabel("Название автомобиля")
+          .setPlaceholder("Например: BMW M5 F90")
           .setStyle(TextInputStyle.Short)
           .setMaxLength(120)
           .setRequired(true),
@@ -206,7 +204,7 @@ function editModal(car) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("label")
-        .setLabel("Как показывать в списке")
+        .setLabel("Название автомобиля")
         .setStyle(TextInputStyle.Short)
         .setMaxLength(120)
         .setRequired(true)
@@ -261,14 +259,14 @@ function carSelect(customId, cars, placeholder) {
   );
 }
 
-function accessRoleRow(carKey) {
-  return new ActionRowBuilder().addComponents(
-    new RoleSelectMenuBuilder()
-      .setCustomId(`c:ap:roles:${carKey}`)
-      .setPlaceholder("Кто может бронировать (пусто = все)")
-      .setMinValues(0)
-      .setMaxValues(25),
-  );
+function accessRoleRow(carKey, roleIds = []) {
+  const select = new RoleSelectMenuBuilder()
+    .setCustomId(`c:ap:roles:${carKey}`)
+    .setPlaceholder("Кто может бронировать (пусто = все)")
+    .setMinValues(0)
+    .setMaxValues(25);
+  if (roleIds.length) select.setDefaultRoles(...roleIds.map(String));
+  return new ActionRowBuilder().addComponents(select);
 }
 
 export async function handleAutoparkInteraction(interaction) {
@@ -476,7 +474,7 @@ export async function handleAutoparkInteraction(interaction) {
     await refreshAutoparkPanels(interaction.client, interaction.guild.id);
     await interaction.reply({
       content: `Обновил авто **${label}**. При необходимости смените роли доступа:`,
-      components: [accessRoleRow(existing.key)],
+      components: [accessRoleRow(existing.key, existing.roleIds || [])],
       ephemeral: true,
     });
     return true;

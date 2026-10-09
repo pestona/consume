@@ -1802,7 +1802,7 @@ async function publishTo(interaction, kind, channel) {
       }
       const msg = await ch.send({
         embeds: [buildAutoparkEmbed(interaction.guild)],
-        components: autoparkPanelRows(),
+        components: autoparkPanelRows(interaction.guild.id),
       });
       registerPanel(interaction.guild.id, ch.id, msg.id);
       rememberPanelChannel(interaction.guild.id, "autopark", ch.id);

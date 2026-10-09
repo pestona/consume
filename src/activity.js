@@ -8,12 +8,11 @@ import {
   ContainerBuilder,
   MessageFlags,
   RoleSelectMenuBuilder,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
   TextDisplayBuilder,
+  UserSelectMenuBuilder,
 } from "discord.js";
 import { canOpenPanel } from "./perms.js";
-import { COLOR_DARK, formatDateTimeRu, logJson, MSK, safeReply, withLock } from "./util.js";
+import { COLOR_DARK, logJson, safeReply } from "./util.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = process.env.DATA_DIR
@@ -25,10 +24,10 @@ const ACT_PATH = path.join(DATA_DIR, "activity.json");
 const ACT_TMP = path.join(DATA_DIR, "activity.json.tmp");
 
 const KINDS = new Set(["voice", "msg", "react"]);
-const KIND_LABEL = { voice: "Войс", msg: "Сообщения", react: "Реакции" };
-const PAGE_SIZE = 20;
 const MAX_ROLE_MEMBERS = 500;
 const V2 = MessageFlags.IsComponentsV2;
+const voiceSessions = new Map();
+let voicePulseTimer = null;
 
 /** @type {Record<string, Record<string, { voice?: number, msg?: number, react?: number }>>} */
 let store = {};
@@ -101,11 +100,16 @@ function scheduleSave() {
 }
 
 load();
-process.on("beforeExit", () => flush());
+process.on("beforeExit", () => {
+  flushVoiceSessions();
+  flush();
+});
 process.on("SIGINT", () => {
+  flushVoiceSessions();
   flush();
 });
 process.on("SIGTERM", () => {
+  flushVoiceSessions();
   flush();
 });
 
@@ -130,201 +134,239 @@ export function getUserActivity(guildId, userId) {
   return store[String(guildId)]?.[String(userId)] || null;
 }
 
-function assertKind(kind) {
-  const k = String(kind || "");
-  if (!KINDS.has(k)) return null;
-  return k;
+const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+function memberRow(guildId, userId) {
+  const g = String(guildId);
+  const u = String(userId);
+  store[g] ||= {};
+  store[g][u] ||= {};
+  store[g][u].daily ||= {};
+  store[g][u].sbors ||= {};
+  return store[g][u];
 }
 
-function fmtWhen(ts) {
-  if (!ts || !Number.isFinite(Number(ts))) return "нет данных";
-  const d = new Date(Number(ts));
-  if (Number.isNaN(d.getTime())) return "нет данных";
-  return `${formatDateTimeRu(d, MSK)} МСК`;
+function dayKey(timestamp = Date.now()) {
+  return new Date(timestamp + MSK_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-function chunkLines(lines, maxLen = 3500) {
-  const pages = [];
-  let buf = [];
-  let used = 0;
-  for (const line of lines) {
-    const add = (buf.length ? 1 : 0) + line.length;
-    if (used + add > maxLen && buf.length) {
-      pages.push(buf.join("\n"));
-      buf = [line];
-      used = line.length;
-    } else {
-      buf.push(line);
-      used += add;
+function dailyRow(guildId, userId, timestamp = Date.now()) {
+  const row = memberRow(guildId, userId);
+  const key = dayKey(timestamp);
+  row.daily[key] ||= { msg: 0, voiceSec: 0 };
+  return row.daily[key];
+}
+
+function addVoiceDuration(guildId, userId, startedAt, endedAt) {
+  let cursor = Number(startedAt);
+  const end = Number(endedAt);
+  if (!Number.isFinite(cursor) || !Number.isFinite(end) || end <= cursor) return;
+
+  while (cursor < end) {
+    const key = dayKey(cursor);
+    const nextDay = Date.parse(`${key}T21:00:00.000Z`);
+    const sliceEnd = Math.min(end, nextDay);
+    dailyRow(guildId, userId, cursor).voiceSec += Math.max(0, Math.round((sliceEnd - cursor) / 1000));
+    cursor = sliceEnd;
+  }
+  scheduleSave();
+}
+
+function flushVoiceSessions() {
+  if (!voiceSessions.size) return;
+  const now = Date.now();
+  for (const [key, session] of voiceSessions) {
+    addVoiceDuration(session.guildId, session.userId, session.startedAt, now);
+    voiceSessions.set(key, { ...session, startedAt: now });
+  }
+}
+
+export function startVoiceTracking(client) {
+  const now = Date.now();
+  for (const guild of client.guilds.cache.values()) {
+    for (const member of guild.members.cache.values()) {
+      if (!member.user.bot && member.voice.channelId) {
+        voiceSessions.set(`${guild.id}:${member.id}`, {
+          guildId: guild.id,
+          userId: member.id,
+          startedAt: now,
+        });
+      }
     }
   }
-  if (buf.length) pages.push(buf.join("\n"));
-  return pages.length ? pages : ["Нет участников с этой ролью."];
+  if (!voicePulseTimer) {
+    voicePulseTimer = setInterval(flushVoiceSessions, 60_000);
+    voicePulseTimer.unref?.();
+  }
 }
 
-export function statsKindRows() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("c:adm:stats:kind")
-        .setPlaceholder("Какая активность?")
-        .addOptions(
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Войс")
-            .setValue("voice")
-            .setEmoji("🔊")
-            .setDescription("Последний заход/активность в войсе"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Сообщения")
-            .setValue("msg")
-            .setEmoji("💬")
-            .setDescription("Последнее сообщение на сервере"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Реакции")
-            .setValue("react")
-            .setEmoji("👍")
-            .setDescription("Последняя поставленная реакция"),
-        ),
-    ),
-  ];
+export function trackSborParticipation(guildId, userId, panelId, kind, timestamp = Date.now()) {
+  if (!guildId || !userId || !panelId || (kind !== null && !["main", "sub"].includes(kind))) return;
+  const row = memberRow(guildId, userId);
+  if (kind === null) delete row.sbors[String(panelId)];
+  else row.sbors[String(panelId)] = { kind, at: Number(timestamp) || Date.now() };
+  scheduleSave();
 }
 
-export function statsRoleRow(kind) {
-  const k = assertKind(kind);
-  if (!k) return null;
-  return new ActionRowBuilder().addComponents(
-    new RoleSelectMenuBuilder()
-      .setCustomId(`c:adm:stats:role:${k}`)
-      .setPlaceholder("Выбери роль для проверки")
-      .setMinValues(1)
-      .setMaxValues(1),
-  );
+const PERIODS = new Set(["today", "7", "30", "all"]);
+const PERIOD_LABELS = { today: "сегодня", 7: "за 7 дней", 30: "за 30 дней", all: "за всё время" };
+
+function normalizePeriod(period) {
+  return PERIODS.has(String(period)) ? String(period) : "7";
 }
 
-function statsPayload(title, body, rows) {
-  const container = new ContainerBuilder()
-    .setAccentColor(COLOR_DARK)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${title}\n${body}`));
-  for (const row of rows) container.addActionRowComponents(row);
-  return { components: [container], flags: V2 };
+function firstPeriodDay(period) {
+  const p = normalizePeriod(period);
+  if (p === "all") return null;
+  const days = p === "today" ? 1 : Number(p);
+  return dayKey(Date.now() - (days - 1) * 24 * 60 * 60 * 1000);
 }
 
-async function buildMemberRows(guild, role, kind) {
+function timestampInPeriod(timestamp, period) {
+  const first = firstPeriodDay(period);
+  return !first || dayKey(Number(timestamp) || 0) >= first;
+}
+
+function totalsFor(guildId, userId, period) {
+  const row = getUserActivity(guildId, userId) || {};
+  const first = firstPeriodDay(period);
+  const totals = { msg: 0, voiceSec: 0, main: 0, sub: 0 };
+  for (const [key, daily] of Object.entries(row.daily || {})) {
+    if (first && key < first) continue;
+    totals.msg += Number(daily.msg) || 0;
+    totals.voiceSec += Number(daily.voiceSec) || 0;
+  }
+  for (const entry of Object.values(row.sbors || {})) {
+    if (!entry || !timestampInPeriod(entry.at, period)) continue;
+    if (entry.kind === "main") totals.main += 1;
+    if (entry.kind === "sub") totals.sub += 1;
+  }
+  const session = voiceSessions.get(`${guildId}:${userId}`);
+  if (session && timestampInPeriod(session.startedAt, period)) {
+    totals.voiceSec += Math.max(0, Math.round((Date.now() - session.startedAt) / 1000));
+  }
+  return totals;
+}
+
+function formatVoice(seconds) {
+  const totalMinutes = Math.floor(Math.max(0, seconds) / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours) return `${hours} ч. ${minutes} мин.`;
+  return `${minutes} мин.`;
+}
+
+function rankingLines(rows, type) {
+  const value = (row) => {
+    if (type === "voice") return row.totals.voiceSec;
+    if (type === "msg") return row.totals.msg;
+    return row.totals.main + row.totals.sub;
+  };
+  const ranked = rows
+    .filter((row) => value(row) > 0)
+    .sort((a, b) => value(b) - value(a))
+    .slice(0, 10);
+  if (!ranked.length) return "_Пока нет данных._";
+  return ranked
+    .map((row, index) => {
+      let amount;
+      if (type === "voice") amount = formatVoice(row.totals.voiceSec);
+      else if (type === "msg") amount = `${row.totals.msg} сообщ.`;
+      else {
+        amount = `${row.totals.main + row.totals.sub} участ. (основа ${row.totals.main}, замена ${row.totals.sub})`;
+      }
+      return `**${index + 1}.** <@${row.id}> — **${amount}**`;
+    })
+    .join("\n");
+}
+
+async function memberStats(guild, period, role = null) {
   try {
     await guild.members.fetch();
   } catch (err) {
     logJson("WARN", "stats members.fetch", { error: String(err), guildId: guild.id });
   }
-
-  const members = [...role.members.values()].filter((m) => m && !m.user.bot);
-  if (members.length > MAX_ROLE_MEMBERS) {
-    return {
-      error: `Слишком много людей с этой ролью (**${members.length}**). Максимум для отчёта: **${MAX_ROLE_MEMBERS}**.`,
-    };
-  }
-
-  const rows = members.map((m) => {
-    const act = getUserActivity(guild.id, m.id);
-    const ts = act?.[kind] ? Number(act[kind]) : 0;
-    return {
-      id: m.id,
-      name: m.displayName || m.user.username || m.id,
-      ts: Number.isFinite(ts) ? ts : 0,
-    };
-  });
-
-  rows.sort((a, b) => {
-    if (a.ts === b.ts) return a.name.localeCompare(b.name, "ru");
-    if (!a.ts) return 1;
-    if (!b.ts) return -1;
-    return b.ts - a.ts;
-  });
-
-  const lines = rows.map((r, i) => {
-    const when = r.ts ? `<t:${Math.floor(r.ts / 1000)}:R> · ${fmtWhen(r.ts)}` : "**нет данных**";
-    return `**${i + 1}.** <@${r.id}> — ${when}`;
-  });
-
-  return { lines, total: rows.length, withData: rows.filter((r) => r.ts > 0).length };
+  const members = role ? [...role.members.values()] : [...guild.members.cache.values()];
+  return members
+    .filter((member) => member && !member.user.bot)
+    .map((member) => ({ id: member.id, totals: totalsFor(guild.id, member.id, period) }));
 }
 
-export async function renderStatsReport(guild, kind, roleId, page = 0) {
-  const k = assertKind(kind);
-  if (!k) return { error: "Неизвестный тип активности." };
-  if (!guild) return { error: "Сервер не найден." };
-  const rid = String(roleId || "");
-  if (!/^\d{5,32}$/.test(rid)) return { error: "Некорректный ID роли." };
-  if (rid === guild.id) return { error: "Нельзя выбрать @everyone." };
-
-  const role = guild.roles.cache.get(rid);
-  if (!role) return { error: "Роль не найдена на сервере." };
-
-  const built = await buildMemberRows(guild, role, k);
-  if (built.error) return { error: built.error };
-
-  const pages = chunkLines(built.lines);
-  const p = Math.max(0, Math.min(page, pages.length - 1));
-  const title = `Статистика · ${KIND_LABEL[k]}`;
-  const body =
-    `Роль: ${role}\n` +
-    `Участников (без ботов): **${built.total}**\n` +
-    `С данными: **${built.withData}** · без данных: **${built.total - built.withData}**\n` +
-    `Страница **${p + 1}/${pages.length}**\n\n` +
-    pages[p];
-
-  const rows = [];
-  if (pages.length > 1) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`c:adm:stats:page:${k}:${rid}:${p - 1}`)
-          .setLabel("← Назад")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(p <= 0),
-        new ButtonBuilder()
-          .setCustomId(`c:adm:stats:page:${k}:${rid}:${p + 1}`)
-          .setLabel("Далее →")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(p >= pages.length - 1),
-      ),
-    );
-  }
-  rows.push(
+function controls(period) {
+  const p = normalizePeriod(period);
+  return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId("c:adm:stats:home")
-        .setLabel("← К выбору активности")
-        .setStyle(ButtonStyle.Primary),
+        .setCustomId("c:adm:stats:period:today")
+        .setLabel("Сегодня")
+        .setStyle(p === "today" ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("c:adm:stats:period:7")
+        .setLabel("7 дней")
+        .setStyle(p === "7" ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("c:adm:stats:period:30")
+        .setLabel("30 дней")
+        .setStyle(p === "30" ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("c:adm:stats:period:all")
+        .setLabel("Всё время")
+        .setStyle(p === "all" ? ButtonStyle.Success : ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId("c:adm:dept:5rp")
-        .setLabel("← Админка")
+        .setLabel("Назад")
         .setStyle(ButtonStyle.Secondary),
     ),
-  );
-
-  return { payload: statsPayload(title, body.slice(0, 3900), rows) };
+    new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`c:adm:stats:user:${p}`)
+        .setPlaceholder("Выбрать участника")
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId(`c:adm:stats:role:${p}`)
+        .setPlaceholder("Выбрать роль")
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+  ];
 }
 
-export function statsHomePayload() {
-  return statsPayload(
-    "Статистика активности",
-    "1) Выбери тип: **войс / сообщения / реакции**\n2) Выбери роль\n3) Получишь список людей с этой ролью и когда они были активны.\n\nДанные копятся с момента запуска бота (и пока бот онлайн).",
-    [
-      ...statsKindRows(),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("c:adm:dept:5rp")
-          .setLabel("← Назад")
-          .setStyle(ButtonStyle.Secondary),
-      ),
-    ],
-  );
+function statsPayload(title, body, period) {
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_DARK)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${title}\n${body}`));
+  for (const row of controls(period)) container.addActionRowComponents(row);
+  return { components: [container], flags: V2 };
+}
+
+async function statsHomePayload(guild, period = "7", role = null) {
+  const p = normalizePeriod(period);
+  const rows = await memberStats(guild, p, role);
+  const body =
+    `### 🔊 Голосовая активность\n${rankingLines(rows, "voice")}\n\n` +
+    `### 💬 Сообщения\n${rankingLines(rows, "msg")}\n\n` +
+    `### 📋 Участие в сборах\n${rankingLines(rows, "sbor")}`;
+  const suffix = role ? ` · ${role.name}` : "";
+  return statsPayload(`Статистика активности — ${PERIOD_LABELS[p]}${suffix}`, body, p);
+}
+
+function userStatsPayload(guildId, userId, period) {
+  const p = normalizePeriod(period);
+  const totals = totalsFor(guildId, userId, p);
+  const body =
+    `<@${userId}>\n\n` +
+    `🔊 Голосовая активность: **${formatVoice(totals.voiceSec)}**\n` +
+    `💬 Сообщения: **${totals.msg}**\n` +
+    `📋 Сборы: **${totals.main + totals.sub}** (основа ${totals.main}, замена ${totals.sub})`;
+  return statsPayload(`Статистика участника — ${PERIOD_LABELS[p]}`, body, p);
 }
 
 export async function handleActivityAdmin(interaction) {
   const id = interaction.customId || "";
   if (!id.startsWith("c:adm:stats:") && id !== "c:adm:tab:stats") return false;
-
   if (!(await canOpenPanel(interaction))) {
     await safeReply(interaction, "Нет доступа к панели.");
     return true;
@@ -335,97 +377,39 @@ export async function handleActivityAdmin(interaction) {
   }
 
   if (interaction.isButton() && (id === "c:adm:tab:stats" || id === "c:adm:stats:home")) {
-    const payload = statsHomePayload();
-    try {
-      await interaction.update(payload);
-    } catch {
-      if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
-      else await interaction.reply(payload);
-    }
+    await interaction.deferUpdate();
+    await interaction.editReply(await statsHomePayload(interaction.guild, "7"));
     return true;
   }
 
-  if (interaction.isStringSelectMenu() && id === "c:adm:stats:kind") {
-    const kind = assertKind(interaction.values[0]);
-    if (!kind) {
-      await safeReply(interaction, "Некорректный тип активности.");
-      return true;
-    }
-    const row = statsRoleRow(kind);
-    await interaction.update(
-      statsPayload(
-        `Статистика · ${KIND_LABEL[kind]}`,
-        "Теперь выбери роль. Покажу всех с этой ролью и время последней активности.",
-        [row],
-      ),
-    );
+  const periodPick = id.match(/^c:adm:stats:period:(today|7|30|all)$/);
+  if (interaction.isButton() && periodPick) {
+    await interaction.deferUpdate();
+    await interaction.editReply(await statsHomePayload(interaction.guild, periodPick[1]));
     return true;
   }
 
-  const rolePick = id.match(/^c:adm:stats:role:(voice|msg|react)$/);
+  const userPick = id.match(/^c:adm:stats:user:(today|7|30|all)$/);
+  if (interaction.isUserSelectMenu() && userPick) {
+    const userId = String(interaction.values?.[0] || "");
+    await interaction.update(userStatsPayload(interaction.guild.id, userId, userPick[1]));
+    return true;
+  }
+
+  const rolePick = id.match(/^c:adm:stats:role:(today|7|30|all)$/);
   if (interaction.isRoleSelectMenu() && rolePick) {
-    const kind = rolePick[1];
     const roleId = String(interaction.values?.[0] || "");
-    if (!/^\d{5,32}$/.test(roleId)) {
-      await safeReply(interaction, "Некорректная роль.");
+    const role = interaction.guild.roles.cache.get(roleId);
+    if (!role || roleId === interaction.guild.id) {
+      await safeReply(interaction, "Выбери обычную роль, не @everyone.");
       return true;
     }
-    if (roleId === interaction.guild.id) {
-      await safeReply(interaction, "Нельзя выбрать @everyone.");
-      return true;
-    }
-    await interaction.deferUpdate();
-    const result = await withLock(`stats:${interaction.guildId}:${kind}:${roleId}`, async () =>
-      renderStatsReport(interaction.guild, kind, roleId, 0),
-    );
-    if (result.error) {
-      await interaction.editReply(
-        statsPayload("Статистика · ошибка", result.error, [
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId("c:adm:stats:home")
-              .setLabel("← К выбору активности")
-              .setStyle(ButtonStyle.Primary),
-          ),
-        ]),
-      );
-      return true;
-    }
-    await interaction.editReply(result.payload);
-    return true;
-  }
-
-  const pagePick = id.match(/^c:adm:stats:page:(voice|msg|react):(\d+):(-?\d+)$/);
-  if (interaction.isButton() && pagePick) {
-    const kind = pagePick[1];
-    const roleId = pagePick[2];
-    const page = Number(pagePick[3]);
-    if (!Number.isInteger(page) || page < 0 || page > 1000) {
-      await safeReply(interaction, "Некорректная страница.");
-      return true;
-    }
-    if (!/^\d{5,32}$/.test(roleId) || roleId === interaction.guild.id) {
-      await safeReply(interaction, "Некорректная роль.");
+    if (role.members.size > MAX_ROLE_MEMBERS) {
+      await safeReply(interaction, `В роли больше ${MAX_ROLE_MEMBERS} участников.`);
       return true;
     }
     await interaction.deferUpdate();
-    const result = await withLock(`stats:${interaction.guildId}:${kind}:${roleId}`, async () =>
-      renderStatsReport(interaction.guild, kind, roleId, page),
-    );
-    if (result.error) {
-      await interaction.editReply(
-        statsPayload("Статистика · ошибка", result.error, [
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId("c:adm:stats:home")
-              .setLabel("← К выбору активности")
-              .setStyle(ButtonStyle.Primary),
-          ),
-        ]),
-      );
-      return true;
-    }
-    await interaction.editReply(result.payload);
+    await interaction.editReply(await statsHomePayload(interaction.guild, rolePick[1], role));
     return true;
   }
 
@@ -435,7 +419,10 @@ export async function handleActivityAdmin(interaction) {
 
 export function trackMessageActivity(message) {
   if (!message?.guild || message.author?.bot || message.webhookId) return;
-  touchActivity(message.guild.id, message.author.id, "msg", message.createdTimestamp || Date.now());
+  const timestamp = message.createdTimestamp || Date.now();
+  touchActivity(message.guild.id, message.author.id, "msg", timestamp);
+  dailyRow(message.guild.id, message.author.id, timestamp).msg += 1;
+  scheduleSave();
 }
 
 export function trackVoiceActivity(oldState, newState) {
@@ -446,7 +433,19 @@ export function trackVoiceActivity(oldState, newState) {
   const joined = !oldState.channelId && newState.channelId;
   const left = oldState.channelId && !newState.channelId;
   const moved = oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId;
-  if (joined || left || moved) touchActivity(guildId, member.id, "voice", Date.now());
+  if (!joined && !left && !moved) return;
+
+  const now = Date.now();
+  const key = `${guildId}:${member.id}`;
+  const session = voiceSessions.get(key);
+  if ((left || moved) && session) {
+    addVoiceDuration(guildId, member.id, session.startedAt, now);
+    voiceSessions.delete(key);
+  }
+  if (joined || moved) {
+    voiceSessions.set(key, { guildId, userId: member.id, startedAt: now });
+  }
+  touchActivity(guildId, member.id, "voice", now);
 }
 
 export function trackReactionActivity(reaction, user) {

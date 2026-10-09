@@ -9,6 +9,7 @@ import {
 import { handlePanelCommand, handleAdminInteraction } from "./adminPanel.js";
 import {
   handleActivityAdmin,
+  startVoiceTracking,
   trackMessageActivity,
   trackReactionActivity,
   trackVoiceActivity,
@@ -16,7 +17,7 @@ import {
 import { handleTicketInteraction } from "./tickets.js";
 import { handleMapsInteraction } from "./maps.js";
 import { handleKontraktInteraction } from "./kontrakt.js";
-import { handleAutoparkInteraction, autoparkExpireLoop } from "./autopark.js";
+import { handleAutoparkInteraction, autoparkExpireLoop, refreshAutoparkPanels } from "./autopark.js";
 import { handleSpamInteraction } from "./spam.js";
 import { handleTempVoiceInteraction, onTempVoiceState } from "./tempVoice.js";
 import { handleArchiveInteraction } from "./archive.js";
@@ -122,6 +123,14 @@ async function syncCommands(readyClient) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   await syncCommands(readyClient);
+  startVoiceTracking(readyClient);
+  await Promise.all(
+    [...readyClient.guilds.cache.keys()].map((guildId) =>
+      refreshAutoparkPanels(readyClient, guildId).catch((err) =>
+        logJson("ERROR", "autopark startup refresh", { guildId, error: String(err) }),
+      ),
+    ),
+  );
   autoparkExpireLoop(readyClient).catch((err) => logJson("ERROR", "autopark loop", { error: String(err) }));
   afkExpireLoop(readyClient).catch((err) => logJson("ERROR", "afk loop", { error: String(err) }));
   logJson("INFO", `Бот запущен: ${readyClient.user.tag} (${readyClient.user.id})`);
