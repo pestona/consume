@@ -13,6 +13,13 @@ export const DEFAULT_NOVA_PANEL_TEXT =
   "**Статус набора:** {status}\n" +
   "**Подать заявку:**";
 
+export const DEFAULT_5RP_PANEL_TEXT =
+  "После отправки анкеты создаётся отдельный тикет для рассмотрения.\n" +
+  "> В случае отказа повторную заявку можно подать через {cooldown} дн.\n\n" +
+  "**RP:** {rp_status}\n" +
+  "**VZP:** {vzp_status}\n\n" +
+  "**Выберите тип заявки:**";
+
 export const MAX_NOVA_QUESTIONS = 5;
 
 export const DEFAULT_WELCOME_PANEL_TEXT =
@@ -28,12 +35,32 @@ export const DEFAULT_NOVA_QUESTIONS = [
   { label: "Откат стрельбы", placeholder: "Ссылка на YouTube", long: true },
 ];
 
+export const DEFAULT_RP_QUESTIONS = [
+  { label: "Возраст", placeholder: "Пример: 18", long: false },
+  { label: "Онлайн", placeholder: "Пример: 4-6 часов", long: false },
+  { label: "Список семей, в которых были", placeholder: "Пример: Killa, Kai, Black", long: false },
+  { label: "Откуда узнали о семье Consume", placeholder: "От друга или из рекламы", long: true },
+  { label: "Откат стрельбы DM 10.500 урона", placeholder: "Ссылка на YouTube | Нету = academy", long: true },
+];
+
+export const DEFAULT_VZP_QUESTIONS = [
+  { label: "Возраст", placeholder: "Пример: 18", long: false },
+  { label: "Онлайн", placeholder: "Пример: 4-6 часов", long: false },
+  { label: "В каких семьях были", placeholder: "Пример: Killa, Kai, Black", long: false },
+  { label: "Откат с VZP/DM", placeholder: "Ссылка на YouTube", long: true },
+];
+
 export function defaultConfig() {
   return {
     moderatorRoleIds: [],
     ticketStaffRoleIds: [],
     ticketPingRoleIds: [],
     ticketCategoryId: null,
+    ticketGifUrl: null,
+    ticketPanelText: DEFAULT_5RP_PANEL_TEXT,
+    ticketCooldownDays: 0,
+    rpTicketQuestions: DEFAULT_RP_QUESTIONS,
+    vzpTicketQuestions: DEFAULT_VZP_QUESTIONS,
     novaTicketCategoryId: null,
     novaTicketStaffRoleIds: [],
     novaTicketPingRoleIds: [],
@@ -115,8 +142,17 @@ export function getConfig(guildId) {
   if (!Array.isArray(merged.novaTicketQuestions) || !merged.novaTicketQuestions.length) {
     merged.novaTicketQuestions = DEFAULT_NOVA_QUESTIONS;
   }
+  if (!Array.isArray(merged.rpTicketQuestions) || !merged.rpTicketQuestions.length) {
+    merged.rpTicketQuestions = DEFAULT_RP_QUESTIONS;
+  }
+  if (!Array.isArray(merged.vzpTicketQuestions) || !merged.vzpTicketQuestions.length) {
+    merged.vzpTicketQuestions = DEFAULT_VZP_QUESTIONS;
+  }
   if (!String(merged.novaTicketPanelText || "").trim()) {
     merged.novaTicketPanelText = DEFAULT_NOVA_PANEL_TEXT;
+  }
+  if (!String(merged.ticketPanelText || "").trim()) {
+    merged.ticketPanelText = DEFAULT_5RP_PANEL_TEXT;
   }
   if (!String(merged.welcomePanelText || "").trim()) {
     merged.welcomePanelText = DEFAULT_WELCOME_PANEL_TEXT;

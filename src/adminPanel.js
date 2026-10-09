@@ -1,6 +1,5 @@
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelSelectMenuBuilder,
@@ -17,17 +16,23 @@ import {
   TextInputStyle,
   UserSelectMenuBuilder,
 } from "discord.js";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_WELCOME_PANEL_TEXT, MAX_NOVA_QUESTIONS, getConfig, setConfig } from "./config.js";
 import {
-  applicationPanel,
-  buildApplicationEmbed,
+  DEFAULT_5RP_PANEL_TEXT,
+  DEFAULT_NOVA_PANEL_TEXT,
+  DEFAULT_WELCOME_PANEL_TEXT,
+  MAX_NOVA_QUESTIONS,
+  getConfig,
+  setConfig,
+} from "./config.js";
+import {
+  applicationPayload,
+  fiveRpQuestions,
   guildAcceptance,
   novaApplicationPayload,
   novaQuestions,
+  refreshApplicationPanels,
   refreshNovaAppPanels,
+  registerApplicationPanel,
   registerNovaAppPanel,
   setGuildAcceptance,
 } from "./tickets.js";
@@ -70,23 +75,9 @@ import {
   statusLine,
 } from "./util.js";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const panelUi = new Map();
 const TEXT_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement];
 const V2 = MessageFlags.IsComponentsV2;
-
-function bannerPath() {
-  for (const name of ["panel.png", "banner.png", "ticket_banner.png"]) {
-    const p = path.join(ROOT, name);
-    if (fs.existsSync(p)) return p;
-  }
-  const fromEnv = (process.env.BANNER_IMAGE_PATH || process.env.APPLICATION_EMBED_IMAGE_PATH || "").trim();
-  if (fromEnv) {
-    const abs = path.isAbsolute(fromEnv) ? fromEnv : path.join(ROOT, fromEnv);
-    if (fs.existsSync(abs)) return abs;
-  }
-  return null;
-}
 
 function fmtCh(id) {
   return id ? `<#${id}>` : "не задан";
@@ -276,6 +267,63 @@ function deptNovaPayload(guild) {
 
 function hubPayload(guild) {
   return dept5rpPayload(guild);
+}
+
+function fiveRpTicketsAdminPayload(guild) {
+  const cfg = getConfig(guild.id);
+  const acc = guildAcceptance(guild.id);
+  const gif = String(cfg.ticketGifUrl || "").trim();
+  const days = Math.max(0, Number(cfg.ticketCooldownDays || 0));
+  const rpQuestions = fiveRpQuestions(cfg, "rp");
+  const vzpQuestions = fiveRpQuestions(cfg, "vzp");
+  const body =
+    `Полная настройка заявок RP и VZP.\n\n` +
+    `**GIF:** ${gif ? "установлен" : "не задан"}\n` +
+    `**Стафф:** ${mentionRoles(cfg.ticketStaffRoleIds)}\n` +
+    `**Тег:** ${mentionRoles(cfg.ticketPingRoleIds)}\n` +
+    `**Академия:** ${mentionRoles(cfg.acceptRoleIdsAcademy)}\n` +
+    `**Основа:** ${mentionRoles(cfg.acceptRoleIdsMain)}\n` +
+    `**Категория:** ${fmtCh(cfg.ticketCategoryId)}\n` +
+    `**Повтор после отказа:** ${days} дн.\n` +
+    `**RP:** ${acc.rp ? "открыт" : "закрыт"} · вопросов: ${rpQuestions.length}\n` +
+    `**VZP:** ${acc.vzp ? "открыт" : "закрыт"} · вопросов: ${vzpQuestions.length}\n\n` +
+    `В тексте: \`{cooldown}\`, \`{rp_status}\`, \`{vzp_status}\`.`;
+
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR_BLUE)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Тикеты 5 RP\n${body}`))
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:5gif", "GIF по ссылке", null, ButtonStyle.Secondary),
+        btn("c:adm:5text", "Текст панели", null, ButtonStyle.Secondary),
+        btn("c:adm:5cd", "Кулдаун", null, ButtonStyle.Secondary),
+        btn("c:adm:dept:5rp", "Назад", null, ButtonStyle.Secondary),
+      ),
+      new ActionRowBuilder().addComponents(
+        btn("c:adm:5q:rp", "Вопросы RP", null, ButtonStyle.Primary),
+        btn("c:adm:5q:vzp", "Вопросы VZP", null, ButtonStyle.Primary),
+        acc.rp
+          ? btn("c:adm:5acc:rp", "Выключить RP", null, ButtonStyle.Danger)
+          : btn("c:adm:5acc:rp", "Включить RP", null, ButtonStyle.Success),
+        acc.vzp
+          ? btn("c:adm:5acc:vzp", "Выключить VZP", null, ButtonStyle.Danger)
+          : btn("c:adm:5acc:vzp", "Включить VZP", null, ButtonStyle.Success),
+      ),
+      roleSelect(guild, "c:cfg:r:staff", "Роли стаффа (кто принимает заявки)", cfg.ticketStaffRoleIds, 25),
+      roleSelect(guild, "c:cfg:r:tping", "Роли тега новой заявки", cfg.ticketPingRoleIds, 25),
+      roleSelect(guild, "c:cfg:r:acad", "Роли после принятия в академию", cfg.acceptRoleIdsAcademy, 25),
+      roleSelect(guild, "c:cfg:r:main", "Роли после принятия в основу", cfg.acceptRoleIdsMain, 25),
+      channelSelect(
+        guild,
+        "c:cfg:c:tcat",
+        "Категория тикетов",
+        [ChannelType.GuildCategory],
+        cfg.ticketCategoryId ? [cfg.ticketCategoryId] : [],
+        1,
+      ),
+    );
+
+  return { components: [container], flags: V2 };
 }
 
 function novaTicketsAdminPayload(guild) {
@@ -670,9 +718,11 @@ function topicStatus(guild, tab, ui) {
 
 function topicPayload(guild, tab, ui) {
   if (tab === "novaq") return novaQuestionsEditorPayload(guild, ui);
+  if (tab === "fiveq") return fiveRpQuestionsEditorPayload(guild, ui);
   if (tab === "welcome") return welcomeAdminPayload(guild);
   if (tab === "autoroles") return reactionRolesAdminPayload(guild);
   if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
+  if (tab === "apps") return fiveRpTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
   const rows = [];
   if (t.options?.length) {
@@ -911,6 +961,66 @@ function novaGifModal(cfg) {
             .setRequired(false)
             .setPlaceholder("https://... .gif  (пусто = убрать)"),
           cfg.novaTicketGifUrl,
+        ),
+      ),
+    );
+}
+
+function fiveRpGifModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:5gif")
+    .setTitle("Гифка панели 5 RP")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("url")
+            .setLabel("Ссылка на gif/png/jpg")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(400)
+            .setRequired(false)
+            .setPlaceholder("https://... .gif  (пусто = убрать)"),
+          cfg.ticketGifUrl,
+        ),
+      ),
+    );
+}
+
+function fiveRpPanelTextModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:5text")
+    .setTitle("Текст панели 5 RP")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("text")
+            .setLabel("Текст и статусы набора")
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(3500)
+            .setRequired(true)
+            .setPlaceholder("{cooldown}, {rp_status}, {vzp_status}"),
+          cfg.ticketPanelText || DEFAULT_5RP_PANEL_TEXT,
+        ),
+      ),
+    );
+}
+
+function fiveRpCooldownModal(cfg) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:5cd")
+    .setTitle("Кулдаун после отказа")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("days")
+            .setLabel("Дней до повторной заявки (0 = нет)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(3)
+            .setRequired(true)
+            .setPlaceholder("0"),
+          String(Math.max(0, Number(cfg.ticketCooldownDays || 0))),
         ),
       ),
     );
@@ -1240,6 +1350,108 @@ function novaQuestionsEditorPayload(guild, ui) {
   ]);
 }
 
+function fiveRpQuestionIndex(ui, questions) {
+  return novaQuestionIndex({ novaQIndex: ui?.fiveRpQIndex }, questions);
+}
+
+function fiveRpQuestionFormModal(mode, question) {
+  const edit = mode === "edit";
+  return new ModalBuilder()
+    .setCustomId(edit ? "c:cfg:m:5qedit" : "c:cfg:m:5qadd")
+    .setTitle(edit ? "Изменить вопрос 5 RP" : "Добавить вопрос 5 RP")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("label")
+            .setLabel("Название вопроса")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(45)
+            .setRequired(true),
+          question?.label,
+        ),
+      ),
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("placeholder")
+            .setLabel("Подсказка в поле")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(100)
+            .setRequired(false),
+          question?.placeholder,
+        ),
+      ),
+      new ActionRowBuilder().addComponents(
+        maybeValue(
+          new TextInputBuilder()
+            .setCustomId("long")
+            .setLabel("Длинный ответ? (да/нет)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(12)
+            .setRequired(true),
+          question?.long ? "да" : "нет",
+        ),
+      ),
+    );
+}
+
+function fiveRpQuestionsEditorPayload(guild, ui) {
+  const kind = ui?.fiveRpQKind === "vzp" ? "vzp" : "rp";
+  const questions = fiveRpQuestions(getConfig(guild.id), kind);
+  const selected = fiveRpQuestionIndex(ui, questions);
+  const current = questions[selected];
+  const lines = questions.map((question, index) => {
+    const mark = index === selected ? "→" : "•";
+    const type = question.long ? "длинный" : "короткий";
+    const hint = question.placeholder ? ` · ${question.placeholder}` : "";
+    return `${mark} **${index + 1}. ${question.label}** — ${type}${hint}`;
+  });
+  const body =
+    `Анкета **${kind.toUpperCase()}**: от **1** до **${MAX_NOVA_QUESTIONS}** вопросов.\n` +
+    `Выбери вопрос, затем измени, удали или поменяй порядок.\n\n` +
+    `${lines.join("\n")}\n\n` +
+    `Выбран: **${current?.label || "—"}**`;
+
+  const pick = new StringSelectMenuBuilder()
+    .setCustomId("c:adm:5qpick")
+    .setPlaceholder("Выберите вопрос")
+    .addOptions(
+      questions.map((question, index) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(`${index + 1}. ${question.label}`.slice(0, 100))
+          .setValue(String(index))
+          .setDescription(
+            `${question.long ? "длинный" : "короткий"}${question.placeholder ? ` · ${question.placeholder}` : ""}`.slice(0, 100),
+          )
+          .setDefault(index === selected),
+      ),
+    );
+
+  const addButton = btn("c:adm:5qadd", "Добавить", null, ButtonStyle.Success);
+  if (questions.length >= MAX_NOVA_QUESTIONS) addButton.setDisabled(true);
+  const deleteButton = btn("c:adm:5qdel", "Удалить", null, ButtonStyle.Danger);
+  if (questions.length <= 1) deleteButton.setDisabled(true);
+  const upButton = btn("c:adm:5qup", "Выше", null, ButtonStyle.Secondary);
+  if (selected <= 0) upButton.setDisabled(true);
+  const downButton = btn("c:adm:5qdn", "Ниже", null, ButtonStyle.Secondary);
+  if (selected >= questions.length - 1) downButton.setDisabled(true);
+
+  return v2Message(`Вопросы ${kind.toUpperCase()}`, body, [
+    new ActionRowBuilder().addComponents(pick),
+    new ActionRowBuilder().addComponents(
+      addButton,
+      btn("c:adm:5qedit", "Изменить", null, ButtonStyle.Primary),
+      deleteButton,
+    ),
+    new ActionRowBuilder().addComponents(
+      upButton,
+      downButton,
+      btn("c:adm:5qback", "Назад", null, ButtonStyle.Secondary),
+    ),
+  ]);
+}
+
 function apMinutesModal(cfg) {
   return new ModalBuilder()
     .setCustomId("c:cfg:m:ap")
@@ -1470,14 +1682,8 @@ async function publishTo(interaction, kind, channel) {
   }
   try {
     if (kind === "apps") {
-      const emb = buildApplicationEmbed(interaction.client.user);
-      const files = [];
-      const banner = bannerPath();
-      if (banner) {
-        files.push(new AttachmentBuilder(banner, { name: "panel.png" }));
-        emb.setThumbnail("attachment://panel.png");
-      }
-      await ch.send({ embeds: [emb], components: [applicationPanel()], files });
+      const msg = await ch.send(applicationPayload(interaction.guild.id));
+      registerApplicationPanel(interaction.guild.id, ch.id, msg.id);
       rememberPanelChannel(interaction.guild.id, "apps", ch.id);
     } else if (kind === "novaapps") {
       const msg = await ch.send(novaApplicationPayload(interaction.guild.id));
@@ -1557,6 +1763,132 @@ export async function handleAdminInteraction(interaction) {
 
   if (!(await canOpenPanel(interaction))) {
     await safeReply(interaction, "Нет доступа к панели.");
+    return true;
+  }
+
+  if (interaction.isButton() && id === "c:adm:5gif") {
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await interaction.showModal(fiveRpGifModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:5text") {
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await interaction.showModal(fiveRpPanelTextModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:5cd") {
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await interaction.showModal(fiveRpCooldownModal(getConfig(interaction.guildId)));
+    return true;
+  }
+  const fiveRpAcceptance = id.match(/^c:adm:5acc:(rp|vzp)$/);
+  if (interaction.isButton() && fiveRpAcceptance) {
+    if (!(await canModerate(interaction))) {
+      await safeReply(interaction, "Нет прав переключать приём заявок.");
+      return true;
+    }
+    const kind = fiveRpAcceptance[1];
+    const before = guildAcceptance(interaction.guildId);
+    setGuildAcceptance(interaction.guildId, { [kind]: !before[kind] });
+    const after = guildAcceptance(interaction.guildId);
+    logAdminChange(interaction, "Админка: изменил приём заявок", [
+      `${kind.toUpperCase()}: **${before[kind] ? "открыт" : "закрыт"}** → **${after[kind] ? "открыт" : "закрыт"}**`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    refreshApplicationPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  const fiveRpQuestionsOpen = id.match(/^c:adm:5q:(rp|vzp)$/);
+  if (interaction.isButton() && fiveRpQuestionsOpen) {
+    const ui = uiSet(interaction, {
+      dept: "5rp",
+      tab: "fiveq",
+      fiveRpQKind: fiveRpQuestionsOpen[1],
+      fiveRpQIndex: 0,
+    });
+    await showPanel(interaction, fiveRpQuestionsEditorPayload(interaction.guild, ui));
+    return true;
+  }
+  if (interaction.isStringSelectMenu() && id === "c:adm:5qpick") {
+    const ui = uiSet(interaction, {
+      dept: "5rp",
+      tab: "fiveq",
+      fiveRpQIndex: Number(interaction.values[0]) || 0,
+    });
+    await showPanel(interaction, fiveRpQuestionsEditorPayload(interaction.guild, ui));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:5qback") {
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:5qadd") {
+    const ui = uiGet(interaction);
+    const kind = ui.fiveRpQKind === "vzp" ? "vzp" : "rp";
+    const questions = fiveRpQuestions(getConfig(interaction.guildId), kind);
+    if (questions.length >= MAX_NOVA_QUESTIONS) {
+      await safeReply(interaction, `Максимум ${MAX_NOVA_QUESTIONS} вопросов — лимит формы Discord.`);
+      return true;
+    }
+    await interaction.showModal(
+      fiveRpQuestionFormModal("add", { label: "", placeholder: "", long: false }),
+    );
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:5qedit") {
+    const ui = uiGet(interaction);
+    const kind = ui.fiveRpQKind === "vzp" ? "vzp" : "rp";
+    const questions = fiveRpQuestions(getConfig(interaction.guildId), kind);
+    const index = fiveRpQuestionIndex(ui, questions);
+    if (!questions[index]) {
+      await safeReply(interaction, "Сначала выберите вопрос.");
+      return true;
+    }
+    uiSet(interaction, { fiveRpQIndex: index });
+    await interaction.showModal(fiveRpQuestionFormModal("edit", questions[index]));
+    return true;
+  }
+  if (interaction.isButton() && id === "c:adm:5qdel") {
+    const ui = uiGet(interaction);
+    const kind = ui.fiveRpQKind === "vzp" ? "vzp" : "rp";
+    const questions = dumpNovaQuestions(fiveRpQuestions(getConfig(interaction.guildId), kind));
+    if (questions.length <= 1) {
+      await safeReply(interaction, "Нужен хотя бы один вопрос.");
+      return true;
+    }
+    const index = fiveRpQuestionIndex(ui, questions);
+    const [removed] = questions.splice(index, 1);
+    const key = kind === "rp" ? "rpTicketQuestions" : "vzpTicketQuestions";
+    setConfig(interaction.guildId, { [key]: questions });
+    logAdminChange(interaction, `Админка: удалил вопрос ${kind.toUpperCase()}`, [
+      `Вопрос: **${removed?.label || index + 1}**`,
+    ]).catch(() => null);
+    const nextUi = uiSet(interaction, {
+      dept: "5rp",
+      tab: "fiveq",
+      fiveRpQKind: kind,
+      fiveRpQIndex: Math.min(index, questions.length - 1),
+    });
+    await showPanel(interaction, fiveRpQuestionsEditorPayload(interaction.guild, nextUi));
+    return true;
+  }
+  if (interaction.isButton() && (id === "c:adm:5qup" || id === "c:adm:5qdn")) {
+    const ui = uiGet(interaction);
+    const kind = ui.fiveRpQKind === "vzp" ? "vzp" : "rp";
+    const questions = dumpNovaQuestions(fiveRpQuestions(getConfig(interaction.guildId), kind));
+    const index = fiveRpQuestionIndex(ui, questions);
+    const swap = id === "c:adm:5qup" ? index - 1 : index + 1;
+    if (swap < 0 || swap >= questions.length) {
+      await showPanel(interaction, fiveRpQuestionsEditorPayload(interaction.guild, ui));
+      return true;
+    }
+    [questions[index], questions[swap]] = [questions[swap], questions[index]];
+    const key = kind === "rp" ? "rpTicketQuestions" : "vzpTicketQuestions";
+    setConfig(interaction.guildId, { [key]: questions });
+    const nextUi = uiSet(interaction, { fiveRpQIndex: swap });
+    await showPanel(interaction, fiveRpQuestionsEditorPayload(interaction.guild, nextUi));
     return true;
   }
 
@@ -1868,6 +2200,7 @@ export async function handleAdminInteraction(interaction) {
           : `VZP: **${acc.vzp ? "открыт" : "закрыт"}** → **${next.vzp ? "открыт" : "закрыт"}**`,
       ]).catch(() => null);
       await refreshTopic(interaction, "apps");
+      refreshApplicationPanels(interaction.client, interaction.guildId).catch(() => null);
       return true;
     }
     if (value === "t:rules") {
@@ -2137,6 +2470,106 @@ export async function handleAdminInteraction(interaction) {
     uiSet(interaction, { dept: "5rp", tab: "autoroles", reactionRoleId: null });
     await refreshTopic(interaction, "autoroles");
     refreshReactionRolePanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:5gif") {
+    const raw = String(interaction.fields.getTextInputValue("url") || "").trim();
+    if (raw) {
+      try {
+        const url = new URL(raw);
+        if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("bad");
+      } catch {
+        await safeReply(interaction, "Нужна обычная ссылка http(s) на картинку/гифку.");
+        return true;
+      }
+    }
+    setConfig(interaction.guildId, { ticketGifUrl: raw || null });
+    logAdminChange(interaction, "Админка: гифка заявок 5 RP", [
+      raw ? `Ссылка: ${raw.slice(0, 120)}` : "Гифка снята",
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    refreshApplicationPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:5text") {
+    const text =
+      String(interaction.fields.getTextInputValue("text") || "").trim() ||
+      DEFAULT_5RP_PANEL_TEXT;
+    setConfig(interaction.guildId, { ticketPanelText: text });
+    logAdminChange(interaction, "Админка: текст панели заявок 5 RP", [
+      `Длина: **${text.length}** символов`,
+      `Превью: ${text.slice(0, 120)}${text.length > 120 ? "…" : ""}`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    refreshApplicationPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:5cd") {
+    const days = Math.min(
+      365,
+      Math.max(
+        0,
+        Math.floor(
+          Number(
+            String(interaction.fields.getTextInputValue("days") || "0").replace(",", "."),
+          ) || 0,
+        ),
+      ),
+    );
+    const before = Math.max(0, Number(getConfig(interaction.guildId).ticketCooldownDays || 0));
+    setConfig(interaction.guildId, { ticketCooldownDays: days });
+    logAdminChange(interaction, "Админка: кулдаун заявок 5 RP", [
+      `Дней после отказа: **${before}** → **${days}**`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "5rp", tab: "apps" });
+    await refreshTopic(interaction, "apps");
+    refreshApplicationPanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
+  if (interaction.isModalSubmit() && (id === "c:cfg:m:5qadd" || id === "c:cfg:m:5qedit")) {
+    const label = String(interaction.fields.getTextInputValue("label") || "").trim().slice(0, 45);
+    if (!label) {
+      await safeReply(interaction, "Название вопроса не может быть пустым.");
+      return true;
+    }
+    const ui = uiGet(interaction);
+    const kind = ui.fiveRpQKind === "vzp" ? "vzp" : "rp";
+    const questions = dumpNovaQuestions(fiveRpQuestions(getConfig(interaction.guildId), kind));
+    let selected = fiveRpQuestionIndex(ui, questions);
+    const nextQuestion = {
+      label,
+      placeholder: String(
+        interaction.fields.getTextInputValue("placeholder") || "",
+      ).trim().slice(0, 100),
+      long: parseLongFlag(interaction.fields.getTextInputValue("long")),
+    };
+    if (id === "c:cfg:m:5qadd") {
+      if (questions.length >= MAX_NOVA_QUESTIONS) {
+        await safeReply(interaction, `Максимум ${MAX_NOVA_QUESTIONS} вопросов — лимит формы Discord.`);
+        return true;
+      }
+      questions.push(nextQuestion);
+      selected = questions.length - 1;
+    } else if (questions[selected]) {
+      questions[selected] = nextQuestion;
+    } else {
+      await safeReply(interaction, "Сначала выберите вопрос.");
+      return true;
+    }
+    const key = kind === "rp" ? "rpTicketQuestions" : "vzpTicketQuestions";
+    setConfig(interaction.guildId, { [key]: questions });
+    logAdminChange(interaction, `Админка: вопросы ${kind.toUpperCase()}`, [
+      `${selected + 1}. **${nextQuestion.label}**`,
+    ]).catch(() => null);
+    const nextUi = uiSet(interaction, {
+      dept: "5rp",
+      tab: "fiveq",
+      fiveRpQKind: kind,
+      fiveRpQIndex: selected,
+    });
+    await showPanel(interaction, fiveRpQuestionsEditorPayload(interaction.guild, nextUi));
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:novagif") {

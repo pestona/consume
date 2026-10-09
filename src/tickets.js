@@ -17,7 +17,15 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { kvGet, kvSet } from "./db.js";
-import { DEFAULT_NOVA_PANEL_TEXT, DEFAULT_NOVA_QUESTIONS, MAX_NOVA_QUESTIONS, getConfig } from "./config.js";
+import {
+  DEFAULT_5RP_PANEL_TEXT,
+  DEFAULT_NOVA_PANEL_TEXT,
+  DEFAULT_NOVA_QUESTIONS,
+  DEFAULT_RP_QUESTIONS,
+  DEFAULT_VZP_QUESTIONS,
+  MAX_NOVA_QUESTIONS,
+  getConfig,
+} from "./config.js";
 import { canHandleTicket, canModerate } from "./perms.js";
 import {
   COLOR_BLUE,
@@ -44,6 +52,8 @@ function ticketsState() {
   data.novaCounter = data.novaCounter && typeof data.novaCounter === "object" ? data.novaCounter : {};
   data.pending = data.pending || {};
   data.novaRejectAt = data.novaRejectAt && typeof data.novaRejectAt === "object" ? data.novaRejectAt : {};
+  data.fiveRpRejectAt =
+    data.fiveRpRejectAt && typeof data.fiveRpRejectAt === "object" ? data.fiveRpRejectAt : {};
   return data;
 }
 
@@ -54,6 +64,7 @@ function saveTickets(data) {
     novaCounter: data.novaCounter || {},
     pending: data.pending,
     novaRejectAt: data.novaRejectAt || {},
+    fiveRpRejectAt: data.fiveRpRejectAt || {},
   });
 }
 
@@ -115,16 +126,16 @@ function ticketDelete(channelId) {
   saveTickets(data);
 }
 
-export function novaQuestions(cfg) {
-  const list = Array.isArray(cfg?.novaTicketQuestions) ? cfg.novaTicketQuestions : [];
-  const labeled = list
+function cleanQuestions(list, defaults) {
+  const source = Array.isArray(list) ? list : [];
+  const labeled = source
     .map((q) => ({
       label: String(q?.label || "").trim().slice(0, 45),
       placeholder: String(q?.placeholder || "").trim().slice(0, 100),
       long: q?.long,
     }))
     .filter((q) => q.label);
-  const src = labeled.length ? labeled.slice(0, MAX_NOVA_QUESTIONS) : DEFAULT_NOVA_QUESTIONS;
+  const src = labeled.length ? labeled.slice(0, MAX_NOVA_QUESTIONS) : defaults;
   return src.map((q, i, arr) => ({
     label: q.label,
     placeholder: q.placeholder || "",
@@ -132,28 +143,45 @@ export function novaQuestions(cfg) {
   }));
 }
 
+export function novaQuestions(cfg) {
+  return cleanQuestions(cfg?.novaTicketQuestions, DEFAULT_NOVA_QUESTIONS);
+}
+
+export function fiveRpQuestions(cfg, kind) {
+  return kind === "rp"
+    ? cleanQuestions(cfg?.rpTicketQuestions, DEFAULT_RP_QUESTIONS)
+    : cleanQuestions(cfg?.vzpTicketQuestions, DEFAULT_VZP_QUESTIONS);
+}
+
 function normalizeFields(kind, fields, cfg) {
   const values = (fields || []).map(([, v]) => String(v));
   const names =
-    kind === "rp"
-      ? ["Возраст", "Онлайн", "Семьи", "Откуда", "Откат"]
-      : kind === "nova"
-        ? novaQuestions(cfg).map((q) => q.label)
-        : ["Возраст", "Онлайн", "Семьи", "Откат"];
+    kind === "nova"
+      ? novaQuestions(cfg).map((q) => q.label)
+      : fiveRpQuestions(cfg, kind).map((q) => q.label);
   return names.map((name, i) => [name, values[i] || "—"]);
 }
 
-function novaCooldownLeftMs(guildId, userId) {
-  const days = Math.max(0, Number(getConfig(guildId).novaTicketCooldownDays || 0));
+function applicationCooldownLeftMs(guildId, userId, kind) {
+  const cfg = getConfig(guildId);
+  const nova = kind === "nova";
+  const days = Math.max(
+    0,
+    Number(nova ? cfg.novaTicketCooldownDays || 0 : cfg.ticketCooldownDays || 0),
+  );
   if (!days) return 0;
-  const at = Number(ticketsState().novaRejectAt?.[`${guildId}:${userId}`] || 0);
+  const state = ticketsState();
+  const at = Number(
+    (nova ? state.novaRejectAt : state.fiveRpRejectAt)?.[`${guildId}:${userId}`] || 0,
+  );
   if (!at) return 0;
   return Math.max(0, at + days * 86_400_000 - Date.now());
 }
 
-function markNovaRejected(guildId, userId) {
+function markRejected(guildId, userId, kind) {
   const data = ticketsState();
-  data.novaRejectAt[`${guildId}:${userId}`] = Date.now();
+  const bucket = kind === "nova" ? data.novaRejectAt : data.fiveRpRejectAt;
+  bucket[`${guildId}:${userId}`] = Date.now();
   saveTickets(data);
 }
 
@@ -227,7 +255,7 @@ export function applicationPanel() {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("c:app:select")
-      .setPlaceholder("📋 Подать Заявку VZP")
+      .setPlaceholder("Выберите тип заявки")
       .addOptions(
         new StringSelectMenuOptionBuilder()
           .setLabel("Подать Заявку РП")
@@ -255,6 +283,98 @@ function normalizeImageUrl(raw) {
     return null;
   }
   return url.slice(0, 2048);
+}
+
+function appPanelsStore() {
+  const data = kvGet("appPanels") || {};
+  data.byGuild = data.byGuild && typeof data.byGuild === "object" ? data.byGuild : {};
+  return data;
+}
+
+function saveAppPanels(data) {
+  kvSet("appPanels", { byGuild: data.byGuild });
+}
+
+export function registerApplicationPanel(guildId, channelId, messageId) {
+  const data = appPanelsStore();
+  const gid = String(guildId);
+  const list = Array.isArray(data.byGuild[gid]) ? data.byGuild[gid] : [];
+  const mid = String(messageId);
+  data.byGuild[gid] = [
+    ...list.filter((panel) => String(panel.messageId) !== mid),
+    { channelId: String(channelId), messageId: mid },
+  ].slice(-20);
+  saveAppPanels(data);
+}
+
+export function applicationPayload(guildId) {
+  const cfg = getConfig(guildId);
+  const acc = guildAcceptance(guildId);
+  const gif = normalizeImageUrl(cfg.ticketGifUrl);
+  const days = Math.max(0, Number(cfg.ticketCooldownDays || 0));
+  const raw = String(cfg.ticketPanelText || DEFAULT_5RP_PANEL_TEXT);
+  const body =
+    `## Оформление заявки 5 RP\n` +
+    raw
+      .replaceAll("{cooldown}", String(days))
+      .replaceAll("{rp_status}", acc.rp ? "открыт" : "закрыт")
+      .replaceAll("{vzp_status}", acc.vzp ? "открыт" : "закрыт")
+      .replaceAll("{status}", acc.rp || acc.vzp ? "открыт" : "закрыт")
+      .slice(0, 3500);
+
+  const container = new ContainerBuilder().setAccentColor(COLOR_DARK);
+  if (gif) {
+    container.addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(gif)),
+    );
+  }
+  container
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+    .addActionRowComponents(applicationPanel());
+  return { components: [container], flags: MessageFlags.IsComponentsV2 };
+}
+
+async function discoverApplicationPanels(guild) {
+  const channelId = getConfig(guild.id).panelChannels?.apps;
+  if (!channelId) return;
+  const channel = guild.channels.cache.get(String(channelId));
+  if (!channel?.messages) return;
+  try {
+    const messages = await channel.messages.fetch({ limit: 40 });
+    for (const message of messages.values()) {
+      if (message.author?.id !== guild.client.user?.id) continue;
+      if (JSON.stringify(message.components || []).includes("c:app:select")) {
+        registerApplicationPanel(guild.id, channel.id, message.id);
+      }
+    }
+  } catch (err) {
+    logJson("WARN", "5rp panel discover", { error: String(err) });
+  }
+}
+
+export async function refreshApplicationPanels(client, guildId) {
+  const guild = client.guilds.cache.get(String(guildId));
+  if (!guild) return;
+  await discoverApplicationPanels(guild);
+  const data = appPanelsStore();
+  const list = Array.isArray(data.byGuild[String(guildId)]) ? data.byGuild[String(guildId)] : [];
+  const payload = applicationPayload(guildId);
+  const next = [];
+  for (const panel of list) {
+    const channel = guild.channels.cache.get(String(panel.channelId));
+    if (!channel?.isTextBased?.()) continue;
+    try {
+      const message = await channel.messages.fetch(String(panel.messageId));
+      await message.edit({ content: null, embeds: [], ...payload });
+      next.push(panel);
+    } catch (err) {
+      if (err?.code !== 10008 && err?.code !== 50001) next.push(panel);
+    }
+  }
+  if (next.length !== list.length) {
+    data.byGuild[String(guildId)] = next;
+    saveAppPanels(data);
+  }
 }
 
 function novaAppPanelsStore() {
@@ -392,52 +512,24 @@ export function buildApplicationEmbed(botUser) {
   return emb;
 }
 
-function rpModal() {
-  const modal = new ModalBuilder().setCustomId("c:app:rp").setTitle("Заявка РП");
-  const fields = [
-    ["f1", "Возраст", "18", TextInputStyle.Short, 200],
-    ["f2", "Онлайн", "Пример: 4-6 часов", TextInputStyle.Short, 200],
-    ["f3", "Список семей в которых были", "Пример: Killa, Kai, Black", TextInputStyle.Short, 100],
-    ["f4", "Откуда узнали о семье Consume", "Пример: От друга | Из рекламы", TextInputStyle.Paragraph, 1000],
-    ["f5", "Откат стрельбы DM 10.500 урона", "Ссылка на YouTube | Нету = academy", TextInputStyle.Paragraph, 500],
-  ];
-  for (const [id, label, placeholder, style, max] of fields) {
+function fiveRpModal(guildId, kind) {
+  const questions = fiveRpQuestions(getConfig(guildId), kind);
+  const modal = new ModalBuilder()
+    .setCustomId(`c:app:${kind}`)
+    .setTitle(kind === "rp" ? "Заявка RP" : "Заявка VZP");
+  questions.forEach((question, index) => {
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
-          .setCustomId(id)
-          .setLabel(label)
-          .setPlaceholder(placeholder)
-          .setStyle(style)
-          .setMaxLength(max)
+          .setCustomId(`f${index + 1}`)
+          .setLabel(question.label.slice(0, 45) || `Вопрос ${index + 1}`)
+          .setPlaceholder((question.placeholder || " ").slice(0, 100))
+          .setStyle(question.long ? TextInputStyle.Paragraph : TextInputStyle.Short)
+          .setMaxLength(question.long ? 1000 : 200)
           .setRequired(true),
       ),
     );
-  }
-  return modal;
-}
-
-function vzpModal() {
-  const modal = new ModalBuilder().setCustomId("c:app:vzp").setTitle("Форма заявки VZP");
-  const fields = [
-    ["f1", "Возраст", "Пример: 18", TextInputStyle.Short, 200],
-    ["f2", "Онлайн", "Пример: 4-6 часов", TextInputStyle.Short, 200],
-    ["f3", "В каких семьях были", "Пример: Killa, Kai, Black", TextInputStyle.Short, 100],
-    ["f4", "Откат с ВЗП/DM", "Ссылка на YouTube", TextInputStyle.Paragraph, 500],
-  ];
-  for (const [id, label, placeholder, style, max] of fields) {
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId(id)
-          .setLabel(label)
-          .setPlaceholder(placeholder)
-          .setStyle(style)
-          .setMaxLength(max)
-          .setRequired(true),
-      ),
-    );
-  }
+  });
   return modal;
 }
 
@@ -496,7 +588,7 @@ export function ticketFinalRows(channelId, kind) {
   ];
 }
 
-function rejectionEmbed(reason, afterInterview) {
+function rejectionEmbed(reason, afterInterview, cooldownDays = 0) {
   return new EmbedBuilder()
     .setTitle(afterInterview ? "❌ Отказ после обзвона" : "❌ Заявка отклонена")
     .setDescription(
@@ -510,7 +602,11 @@ function rejectionEmbed(reason, afterInterview) {
       { name: "Причина отказа", value: reasonInCodeBlock(reason), inline: false },
       {
         name: "Дальше",
-        value: "Повторная заявка — через 1–3 дня.\nИсправь то, что указано в причине.",
+        value:
+          (cooldownDays > 0
+            ? `Повторная заявка — через ${cooldownDays} дн.`
+            : "Повторную заявку можно подать сразу.") +
+          "\nИсправь то, что указано в причине.",
         inline: false,
       },
     )
@@ -612,13 +708,11 @@ async function submitApplication(interaction, kind, fields) {
   }
 
   const cfg = getConfig(interaction.guild.id);
-  if (kind === "nova") {
-    const left = novaCooldownLeftMs(interaction.guild.id, applicant.id);
-    if (left > 0) {
-      const days = Math.max(1, Math.ceil(left / 86_400_000));
-      await interaction.editReply(`Повторная заявка доступна через **${days}** дн.`);
-      return;
-    }
+  const left = applicationCooldownLeftMs(interaction.guild.id, applicant.id, kind);
+  if (left > 0) {
+    const days = Math.max(1, Math.ceil(left / 86_400_000));
+    await interaction.editReply(`Повторная заявка доступна через **${days}** дн.`);
+    return;
   }
 
   const ticketNo = nextTicketNo(interaction.guild.id, kind);
@@ -792,9 +886,20 @@ async function handleRejectSubmit(interaction, channelId) {
     applicant = await guild.members.fetch(String(rec.applicantId)).catch(() => null);
   }
   if (applicant) {
-    await safeDm(applicant.user, { embeds: [rejectionEmbed(reason, true)] });
+    const cfg = getConfig(guild.id);
+    const cooldownDays = Math.max(
+      0,
+      Number(
+        rec.kind === "nova"
+          ? cfg.novaTicketCooldownDays || 0
+          : cfg.ticketCooldownDays || 0,
+      ),
+    );
+    await safeDm(applicant.user, {
+      embeds: [rejectionEmbed(reason, true, cooldownDays)],
+    });
   }
-  if (rec.kind === "nova") markNovaRejected(guild.id, rec.applicantId);
+  markRejected(guild.id, rec.applicantId, rec.kind);
   ticketDelete(channelId);
   await interaction.editReply("Отказ с причиной отправлен заявителю в ЛС.");
   const ch = guild.channels.cache.get(channelId);
@@ -816,31 +921,35 @@ export async function handleTicketInteraction(interaction) {
       await safeReply(interaction, "Используйте на сервере.");
       return true;
     }
-    const resetSelect = () =>
-      interaction.message?.edit({ components: [applicationPanel()] }).catch(() => null);
-
     const acc = guildAcceptance(interaction.guild.id);
     if (val === "rp") {
       if (!acc.rp) {
         await safeReply(interaction, "Приём заявок РП временно закрыт.");
-        await resetSelect();
         return true;
       }
-      await interaction.showModal(rpModal());
-      await resetSelect();
+      const left = applicationCooldownLeftMs(interaction.guild.id, interaction.user.id, "rp");
+      if (left > 0) {
+        const days = Math.max(1, Math.ceil(left / 86_400_000));
+        await safeReply(interaction, `Повторная заявка доступна через **${days}** дн.`);
+        return true;
+      }
+      await interaction.showModal(fiveRpModal(interaction.guild.id, "rp"));
       return true;
     }
     if (val === "vzp") {
       if (!acc.vzp) {
         await safeReply(interaction, "Приём заявок VZP временно закрыт.");
-        await resetSelect();
         return true;
       }
-      await interaction.showModal(vzpModal());
-      await resetSelect();
+      const left = applicationCooldownLeftMs(interaction.guild.id, interaction.user.id, "vzp");
+      if (left > 0) {
+        const days = Math.max(1, Math.ceil(left / 86_400_000));
+        await safeReply(interaction, `Повторная заявка доступна через **${days}** дн.`);
+        return true;
+      }
+      await interaction.showModal(fiveRpModal(interaction.guild.id, "vzp"));
       return true;
     }
-    await resetSelect();
     return true;
   }
 
@@ -856,26 +965,32 @@ export async function handleTicketInteraction(interaction) {
       embeds: [moderationEmbed(interaction.guild.id)],
       components: [moderationPanel()],
     });
+    refreshApplicationPanels(interaction.client, interaction.guild.id).catch(() => null);
     return true;
   }
 
   if (interaction.isModalSubmit() && id === "c:app:rp") {
-    await submitApplication(interaction, "rp", [
-      ["ВОЗРАСТ", interaction.fields.getTextInputValue("f1")],
-      ["ОНЛАЙН", interaction.fields.getTextInputValue("f2")],
-      ["СПИСОК СЕМЕЙ, В КОТОРЫХ БЫЛИ", interaction.fields.getTextInputValue("f3")],
-      ["ОТКУДА УЗНАЛИ", interaction.fields.getTextInputValue("f4")],
-      ["ОТКАТ СТРЕЛЬБЫ DM 10.500 УРОНА", interaction.fields.getTextInputValue("f5")],
-    ]);
+    const questions = fiveRpQuestions(getConfig(interaction.guildId), "rp");
+    await submitApplication(
+      interaction,
+      "rp",
+      questions.map((question, index) => [
+        question.label,
+        interaction.fields.getTextInputValue(`f${index + 1}`),
+      ]),
+    );
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:app:vzp") {
-    await submitApplication(interaction, "vzp", [
-      ["ВОЗРАСТ", interaction.fields.getTextInputValue("f1")],
-      ["ОНЛАЙН", interaction.fields.getTextInputValue("f2")],
-      ["В КАКИХ СЕМЬЯХ БЫЛИ", interaction.fields.getTextInputValue("f3")],
-      ["ОТКАТ С ВЗП/DM", interaction.fields.getTextInputValue("f4")],
-    ]);
+    const questions = fiveRpQuestions(getConfig(interaction.guildId), "vzp");
+    await submitApplication(
+      interaction,
+      "vzp",
+      questions.map((question, index) => [
+        question.label,
+        interaction.fields.getTextInputValue(`f${index + 1}`),
+      ]),
+    );
     return true;
   }
 
@@ -888,7 +1003,7 @@ export async function handleTicketInteraction(interaction) {
       await safeReply(interaction, "Приём заявок Нова временно закрыт.");
       return true;
     }
-    const left = novaCooldownLeftMs(interaction.guild.id, interaction.user.id);
+    const left = applicationCooldownLeftMs(interaction.guild.id, interaction.user.id, "nova");
     if (left > 0) {
       const days = Math.max(1, Math.ceil(left / 86_400_000));
       await safeReply(interaction, `Повторная заявка доступна через **${days}** дн.`);
