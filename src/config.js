@@ -46,6 +46,9 @@ export function defaultConfig() {
     welcomePanelText: DEFAULT_WELCOME_PANEL_TEXT,
     welcomeNovaLinkChannelId: null,
     welcomeRpLinkChannelId: null,
+    reactionRoles: [],
+    reactionRolePanelText:
+      "Нажмите на реакцию под сообщением, чтобы получить роль. Уберите реакцию, чтобы снять её.",
     acceptRoleIdsAcademy: [],
     acceptRoleIdsMain: [],
     botActionLogChannelId: null,
@@ -96,6 +99,7 @@ export function defaultConfig() {
       afk: null,
       novaApps: null,
       welcome: null,
+      reactionRoles: null,
     },
   };
 }

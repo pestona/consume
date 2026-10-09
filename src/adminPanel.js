@@ -37,6 +37,13 @@ import {
   welcomeLinkChannels,
   welcomePanelPayload,
 } from "./welcome.js";
+import {
+  MAX_REACTION_ROLES,
+  parseReactionEmoji,
+  publishReactionRolePanel,
+  reactionRoleItems,
+  refreshReactionRolePanels,
+} from "./reactionRoles.js";
 import { buildMapsEmbed, mapsPanel } from "./maps.js";
 import {
   buildKontraktPanelEmbed,
@@ -231,6 +238,7 @@ function dept5rpPayload(guild) {
         btn("c:adm:tab:stats", "Статистика", "📈", ButtonStyle.Primary),
         btn("c:adm:tab:sbor", "Доступ", "🔑"),
         btn("c:adm:tab:afk", "AFK", "😴"),
+        btn("c:adm:tab:autoroles", "Автороли", "🎭"),
       ),
     );
 
@@ -360,6 +368,7 @@ function topicStatus(guild, tab, ui) {
         `${panelLine(cfg, "voice", "Комнаты")}\n` +
         `${panelLine(cfg, "archive", "Архив")}\n` +
         `${panelLine(cfg, "afk", "AFK / Инактив")}\n` +
+        `${panelLine(cfg, "reactionRoles", "Автороли")}\n` +
         `${panelLine(cfg, "control", "Админка")}\n\n` +
         "Отправка **не удаляет** прошлую панель — в канал уходит новая копия.",
       options: [
@@ -370,6 +379,7 @@ function topicStatus(guild, tab, ui) {
         { label: "Панель комнат", value: "pub:voice", emoji: "🔊", description: "Управление войсами" },
         { label: "Панель архива", value: "pub:archive", emoji: "📁", description: "Создание каналов" },
         { label: "Панель AFK / Инактив", value: "pub:afk", emoji: "😴", description: "Куда отправить" },
+        { label: "Панель авторолей", value: "pub:reactionroles", emoji: "🎭", description: "Роли по реакциям" },
         { label: "Эту админку", value: "pub:control", emoji: "📋", description: "Куда отправить" },
       ],
       placeholder: "Какую панель отправить?",
@@ -661,6 +671,7 @@ function topicStatus(guild, tab, ui) {
 function topicPayload(guild, tab, ui) {
   if (tab === "novaq") return novaQuestionsEditorPayload(guild, ui);
   if (tab === "welcome") return welcomeAdminPayload(guild);
+  if (tab === "autoroles") return reactionRolesAdminPayload(guild);
   if (tab === "apps" && ui?.dept === "nova") return novaTicketsAdminPayload(guild);
   const t = topicStatus(guild, tab, ui);
   const rows = [];
@@ -761,6 +772,7 @@ const PANEL_LABELS = {
   apps: "Заявки",
   novaapps: "Заявки Нова",
   welcome: "Приветствие",
+  reactionroles: "Автороли",
   maps: "Карты VZP",
   kontr: "Контракты",
   ap: "Автопарк",
@@ -774,6 +786,7 @@ function panelChannelKey(kind) {
   if (kind === "kontr") return "kontrakt";
   if (kind === "ap") return "autopark";
   if (kind === "novaapps") return "novaApps";
+  if (kind === "reactionroles") return "reactionRoles";
   return kind;
 }
 
@@ -1002,6 +1015,87 @@ function welcomeTextModal(cfg) {
             .setPlaceholder("Пустой текст вернёт стандартный."),
           cfg.welcomePanelText || DEFAULT_WELCOME_PANEL_TEXT,
         ),
+      ),
+    );
+}
+
+function reactionRolesAdminPayload(guild) {
+  const cfg = getConfig(guild.id);
+  const items = reactionRoleItems(cfg);
+  const lines = items.map(
+    (item, index) =>
+      `${index + 1}. ${item.emoji} → <@&${item.roleId}>${item.label ? ` · ${item.label}` : ""}`,
+  );
+  const body =
+    `Роль выдаётся при добавлении реакции и снимается при её удалении.\n` +
+    `Бот должен стоять **выше выдаваемых ролей**.\n\n` +
+    `${lines.length ? lines.join("\n") : "Автороли пока не добавлены."}\n\n` +
+    `${panelLine(cfg, "reactionRoles", "Панель")} · **${items.length}/${MAX_REACTION_ROLES}**`;
+
+  const rows = [
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId("c:cfg:r:rradd")
+        .setPlaceholder("Добавить роль")
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+  ];
+  if (items.length) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("c:adm:rrdel")
+          .setPlaceholder("Удалить связку")
+          .addOptions(
+            items.map((item, index) =>
+              new StringSelectMenuOptionBuilder()
+                .setLabel(`${item.emoji} ${item.label || guild.roles.cache.get(item.roleId)?.name || item.roleId}`.slice(0, 100))
+                .setValue(String(index))
+                .setDescription(`Роль: ${guild.roles.cache.get(item.roleId)?.name || item.roleId}`.slice(0, 100)),
+            ),
+          ),
+      ),
+    );
+  }
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId("c:adm:send:reactionroles")
+        .setPlaceholder("Отправить панель в канал")
+        .setMinValues(1)
+        .setMaxValues(1)
+        .setChannelTypes(...TEXT_TYPES),
+    ),
+    new ActionRowBuilder().addComponents(
+      btn("c:adm:dept:5rp", "← Назад", null, ButtonStyle.Secondary),
+    ),
+  );
+  return v2Message("Автороли", body, rows);
+}
+
+function reactionRoleModal(role) {
+  return new ModalBuilder()
+    .setCustomId("c:cfg:m:rradd")
+    .setTitle("Добавить автороль")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("emoji")
+          .setLabel("Эмодзи реакции")
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(100)
+          .setRequired(true)
+          .setPlaceholder("✅ или <:название:ID>"),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("label")
+          .setLabel("Подпись роли")
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(80)
+          .setRequired(false)
+          .setPlaceholder(role?.name || "Название"),
       ),
     );
 }
@@ -1323,6 +1417,7 @@ const MENU_LABELS = {
   "pub:apps": "Отправить панель заявок",
   "pub:novaapps": "Отправить панель заявок Нова",
   "pub:welcome": "Отправить панель приветствия",
+  "pub:reactionroles": "Отправить панель авторолей",
   "c:novatcat": "Категория тикетов Нова",
   "r:novastaff": "Роли рекрутера Нова",
   "r:novaping": "Роли тега Нова",
@@ -1359,6 +1454,7 @@ const TAB_LABELS = {
   rooms: "Комнаты",
   archive: "Архив",
   welcome: "Приветствие",
+  autoroles: "Автороли",
   afk: "AFK / Инактив",
   protect: "Защита",
   summary: "Сводка",
@@ -1391,6 +1487,9 @@ async function publishTo(interaction, kind, channel) {
       const msg = await ch.send(welcomePanelPayload(interaction.guild.id));
       registerWelcomePanel(interaction.guild.id, ch.id, msg.id);
       rememberPanelChannel(interaction.guild.id, "welcome", ch.id);
+    } else if (kind === "reactionroles") {
+      await publishReactionRolePanel(ch, interaction.guild.id);
+      rememberPanelChannel(interaction.guild.id, "reactionRoles", ch.id);
     } else if (kind === "maps") {
       await ch.send({ embeds: [buildMapsEmbed()], components: [mapsPanel()] });
       rememberPanelChannel(interaction.guild.id, "maps", ch.id);
@@ -1439,8 +1538,14 @@ async function publishTo(interaction, kind, channel) {
       await safeReply(interaction, "Неизвестная панель.");
       return false;
     }
-  } catch {
-    await safeReply(interaction, `Не удалось отправить в ${ch}. Проверьте права бота.`);
+  } catch (err) {
+    const text = String(err?.message || "");
+    await safeReply(
+      interaction,
+      text.startsWith("Сначала ")
+        ? text
+        : `Не удалось отправить в ${ch}. Проверьте права бота и доступ к эмодзи.`,
+    );
     return false;
   }
   return true;
@@ -1567,6 +1672,28 @@ export async function handleAdminInteraction(interaction) {
     await showPanel(interaction, novaQuestionsEditorPayload(interaction.guild, ui));
     return true;
   }
+  if (interaction.isStringSelectMenu() && id === "c:adm:rrdel") {
+    if (!(await canEditSettings(interaction))) {
+      await safeReply(interaction, "Автороли может менять только владелец или участник с правом «Управлять сервером».");
+      return true;
+    }
+    const cfg = getConfig(interaction.guildId);
+    const items = reactionRoleItems(cfg);
+    const index = Number(interaction.values[0]);
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+      await safeReply(interaction, "Связка уже удалена или устарела.");
+      return true;
+    }
+    const [removed] = items.splice(index, 1);
+    setConfig(interaction.guildId, { reactionRoles: items });
+    logAdminChange(interaction, "Админка: удалил автороль", [
+      `${removed.emoji} → <@&${removed.roleId}>`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "5rp", tab: "autoroles" });
+    await refreshTopic(interaction, "autoroles");
+    refreshReactionRolePanels(interaction.client, interaction.guildId).catch(() => null);
+    return true;
+  }
   if (interaction.isButton() && id === "c:adm:novaacc") {
     if (!(await canModerate(interaction))) {
       await safeReply(interaction, "Нет прав переключать приём заявок.");
@@ -1612,7 +1739,7 @@ export async function handleAdminInteraction(interaction) {
       const saved = getConfig(interaction.guildId).adminHubDept === "nova" ? "nova" : "5rp";
       uiSet(interaction, { dept: saved });
     }
-    if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "afk", "protect"].includes(tab) && !(await canEditSettings(interaction))) {
+    if (["cars", "logs", "kontr", "mods", "sbor", "rooms", "archive", "afk", "protect", "autoroles"].includes(tab) && !(await canEditSettings(interaction))) {
       await safeReply(interaction, "Привязки может менять только владелец или участник с правом «Управлять сервером».");
       return true;
     }
@@ -1638,6 +1765,10 @@ export async function handleAdminInteraction(interaction) {
   const sendPanel = id.match(/^c:adm:send:(.+)$/);
   if (interaction.isChannelSelectMenu() && sendPanel) {
     const kind = sendPanel[1];
+    if (kind === "reactionroles" && !(await canEditSettings(interaction))) {
+      await safeReply(interaction, "Панель авторолей может публиковать только владелец или участник с правом «Управлять сервером».");
+      return true;
+    }
     const channelId = interaction.values[0];
     const ch = interaction.guild.channels.cache.get(channelId);
     if (!ch || (ch.type !== ChannelType.GuildText && ch.type !== ChannelType.GuildAnnouncement)) {
@@ -1852,6 +1983,28 @@ export async function handleAdminInteraction(interaction) {
     }
   }
 
+  if (interaction.isRoleSelectMenu() && id === "c:cfg:r:rradd") {
+    const cfg = getConfig(interaction.guildId);
+    const items = reactionRoleItems(cfg);
+    if (items.length >= MAX_REACTION_ROLES) {
+      await safeReply(interaction, `Достигнут лимит: ${MAX_REACTION_ROLES} авторолей.`);
+      return true;
+    }
+    const roleId = interaction.values[0];
+    const role = interaction.guild.roles.cache.get(String(roleId));
+    if (!role || role.id === interaction.guild.id || role.managed) {
+      await safeReply(interaction, "Эту роль нельзя выдавать автоматически.");
+      return true;
+    }
+    if (items.some((item) => item.roleId === role.id)) {
+      await safeReply(interaction, "Для этой роли уже настроена реакция.");
+      return true;
+    }
+    uiSet(interaction, { dept: "5rp", tab: "autoroles", reactionRoleId: role.id });
+    await interaction.showModal(reactionRoleModal(role));
+    return true;
+  }
+
   if (interaction.isRoleSelectMenu() && ROLE_PATCH[id]) {
     const label = CFG_LABELS[id] || id;
     const before = getConfig(interaction.guildId);
@@ -1936,6 +2089,54 @@ export async function handleAdminInteraction(interaction) {
       `Превью: ${text.slice(0, 120) || "пусто"}${text.length > 120 ? "…" : ""}`,
     ]).catch(() => null);
     await refreshTopic(interaction, "kontr");
+    return true;
+  }
+  if (interaction.isModalSubmit() && id === "c:cfg:m:rradd") {
+    if (!(await canEditSettings(interaction))) {
+      await safeReply(interaction, "Автороли может менять только владелец или участник с правом «Управлять сервером».");
+      return true;
+    }
+    const roleId = String(uiGet(interaction).reactionRoleId || "");
+    const role = interaction.guild.roles.cache.get(roleId);
+    if (!role || role.id === interaction.guild.id || role.managed) {
+      await safeReply(interaction, "Выбранная роль больше недоступна.");
+      return true;
+    }
+    const parsed = parseReactionEmoji(interaction.fields.getTextInputValue("emoji"));
+    if (!parsed) {
+      await safeReply(interaction, "Укажите один обычный эмодзи или серверный эмодзи в формате `<:название:ID>`.");
+      return true;
+    }
+    const cfg = getConfig(interaction.guildId);
+    const items = reactionRoleItems(cfg);
+    if (items.length >= MAX_REACTION_ROLES) {
+      await safeReply(interaction, `Достигнут лимит: ${MAX_REACTION_ROLES} авторолей.`);
+      return true;
+    }
+    if (items.some((item) => item.roleId === role.id)) {
+      await safeReply(interaction, "Для этой роли уже настроена реакция.");
+      return true;
+    }
+    if (items.some((item) => item.emojiKey === parsed.emojiKey)) {
+      await safeReply(interaction, "Этот эмодзи уже используется для другой роли.");
+      return true;
+    }
+    const label =
+      String(interaction.fields.getTextInputValue("label") || "").trim().slice(0, 80) ||
+      role.name;
+    items.push({
+      emoji: parsed.emoji,
+      emojiKey: parsed.emojiKey,
+      roleId: role.id,
+      label,
+    });
+    setConfig(interaction.guildId, { reactionRoles: items });
+    logAdminChange(interaction, "Админка: добавил автороль", [
+      `${parsed.emoji} → <@&${role.id}> · ${label}`,
+    ]).catch(() => null);
+    uiSet(interaction, { dept: "5rp", tab: "autoroles", reactionRoleId: null });
+    await refreshTopic(interaction, "autoroles");
+    refreshReactionRolePanels(interaction.client, interaction.guildId).catch(() => null);
     return true;
   }
   if (interaction.isModalSubmit() && id === "c:cfg:m:novagif") {

@@ -35,6 +35,7 @@ import {
 } from "./sbor.js";
 import { onMemberRemove } from "./modLogs.js";
 import { onAntinukeChannelDelete } from "./antinuke.js";
+import { onReactionRole } from "./reactionRoles.js";
 import { logBotAction, startHealthServerIfNeeded } from "./schedulers.js";
 import { isStale, logJson, safeReply } from "./util.js";
 
@@ -168,6 +169,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (reaction.partial) await reaction.fetch().catch(() => null);
     if (user.partial) await user.fetch().catch(() => null);
     trackReactionActivity(reaction, user);
+    await onReactionRole(reaction, user, true);
     await onSborReaction(reaction, user, true);
   } catch (err) {
     logJson("ERROR", "reaction activity", { error: String(err) });
@@ -178,6 +180,7 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
   try {
     if (reaction.partial) await reaction.fetch().catch(() => null);
     if (user.partial) await user.fetch().catch(() => null);
+    await onReactionRole(reaction, user, false);
     await onSborReaction(reaction, user, false);
   } catch (err) {
     logJson("ERROR", "reaction remove", { error: String(err) });
