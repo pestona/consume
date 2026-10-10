@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
+  EmbedBuilder,
   MediaGalleryBuilder,
   MediaGalleryItemBuilder,
   MessageFlags,
@@ -10,7 +11,7 @@ import {
 } from "discord.js";
 import { kvGet, kvSet } from "./db.js";
 import { DEFAULT_WELCOME_PANEL_TEXT, getConfig } from "./config.js";
-import { COLOR_BLUE, logJson } from "./util.js";
+import { COLOR_BLUE, COLOR_DARK, logJson, MSK } from "./util.js";
 
 function normalizeImageUrl(raw) {
   let s = String(raw || "").trim().replace(/^<|>$/g, "").trim();
@@ -35,6 +36,40 @@ export function welcomeLinkChannels(cfg) {
     nova: cfg.welcomeNovaLinkChannelId || cfg.panelChannels?.novaApps || null,
     rp: cfg.welcomeRpLinkChannelId || cfg.panelChannels?.apps || null,
   };
+}
+
+function linkButtons(guildId, nova, rp) {
+  const links = [];
+  if (nova) {
+    links.push(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel("Nova RP")
+        .setURL(`https://discord.com/channels/${guildId}/${nova}`),
+    );
+  }
+  if (rp) {
+    links.push(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel("5 RP")
+        .setURL(`https://discord.com/channels/${guildId}/${rp}`),
+    );
+  }
+  return links;
+}
+
+function joinStamp(date = new Date()) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: MSK,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function panelsStore() {
@@ -80,26 +115,60 @@ export function welcomePanelPayload(guildId) {
   }
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(body));
 
-  const links = [];
-  if (nova) {
-    links.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel("Nova RP")
-        .setURL(`https://discord.com/channels/${guildId}/${nova}`),
-    );
-  }
-  if (rp) {
-    links.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel("5 RP")
-        .setURL(`https://discord.com/channels/${guildId}/${rp}`),
-    );
-  }
+  const links = linkButtons(guildId, nova, rp);
   if (links.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...links));
 
   return { components: [container], flags: MessageFlags.IsComponentsV2 };
+}
+
+function welcomeJoinPayload(member) {
+  const guild = member.guild;
+  const cfg = getConfig(guild.id);
+  const { nova, rp } = welcomeLinkChannels(cfg);
+  const gif = normalizeImageUrl(cfg.welcomeGifUrl);
+  const name = member.user?.username || member.displayName || member.id;
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_DARK)
+    .setTitle(`Приветствуем тебя, @${name}!`)
+    .setDescription(`Добро пожаловать на сервер **${guild.name}**!`)
+    .setFooter({ text: `ID участника: ${member.id} • ${joinStamp()}` });
+  if (gif) embed.setImage(gif);
+
+  const lines = [`Приветствую тебя, <@${member.id}>! Подать заявку в семью можно тут:`];
+  if (nova) lines.push(`**Nova RP** — <#${nova}>`);
+  if (rp) lines.push(`**5 RP** — <#${rp}>`);
+  const links = linkButtons(guild.id, nova, rp);
+
+  return {
+    embed: { embeds: [embed] },
+    followUp: {
+      content: lines.join("\n"),
+      components: links.length ? [new ActionRowBuilder().addComponents(...links)] : [],
+    },
+  };
+}
+
+export async function onMemberJoinWelcome(member) {
+  if (!member?.guild || member.user?.bot) return;
+  const cfg = getConfig(member.guild.id);
+  const channelId = cfg.welcomeJoinChannelId || cfg.panelChannels?.welcome || null;
+  if (!channelId) return;
+  const channel =
+    member.guild.channels.cache.get(String(channelId)) ||
+    (await member.guild.channels.fetch(String(channelId)).catch(() => null));
+  if (!channel?.isTextBased?.()) return;
+
+  const payload = welcomeJoinPayload(member);
+  try {
+    await channel.send(payload.embed);
+    await channel.send(payload.followUp);
+  } catch (err) {
+    logJson("WARN", "welcome join не отправлен", {
+      guildId: member.guild.id,
+      channelId,
+      error: String(err),
+    });
+  }
 }
 
 export async function refreshWelcomePanels(client, guildId) {

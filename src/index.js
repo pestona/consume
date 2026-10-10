@@ -34,6 +34,7 @@ import {
   onSborMessageUpdate,
   onSborReaction,
 } from "./sbor.js";
+import { onMemberJoinWelcome } from "./welcome.js";
 import { onMemberRemove } from "./modLogs.js";
 import { onAntinukeChannelDelete } from "./antinuke.js";
 import { onReactionRole } from "./reactionRoles.js";
@@ -160,6 +161,10 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   onTempVoiceState(oldState, newState).catch((err) =>
     logJson("ERROR", "temp voice", { error: String(err) }),
   );
+});
+
+client.on(Events.GuildMemberAdd, (member) => {
+  onMemberJoinWelcome(member).catch((err) => logJson("ERROR", "welcome join", { error: String(err) }));
 });
 
 client.on(Events.GuildMemberRemove, (member) => {

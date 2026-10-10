@@ -1198,9 +1198,11 @@ function welcomeAdminPayload(guild) {
   const body =
     `Оформление панели приветствия: гифка, текст и ссылки на заявки.\n\n` +
     `**GIF:** ${gif ? "установлен" : "не задан"}\n` +
+    `**Канал входа:** ${fmtCh(cfg.welcomeJoinChannelId)}\n` +
     `**Nova RP:** ${fmtCh(links.nova)}\n` +
     `**5 RP:** ${fmtCh(links.rp)}\n` +
     `${panelLine(cfg, "welcome", "Панель")}\n\n` +
+    "При входе: эмбед + сообщение со ссылками на заявки.\n" +
     "В тексте панели: `{nova}` и `{5rp}` — подставятся каналы заявок.";
 
   const container = new ContainerBuilder()
@@ -1227,6 +1229,14 @@ function welcomeAdminPayload(guild) {
         "Канал заявок 5 RP",
         TEXT_TYPES,
         cfg.welcomeRpLinkChannelId ? [cfg.welcomeRpLinkChannelId] : [],
+        1,
+      ),
+      channelSelect(
+        guild,
+        "c:cfg:c:weljoin",
+        "Канал приветствия при входе",
+        TEXT_TYPES,
+        cfg.welcomeJoinChannelId ? [cfg.welcomeJoinChannelId] : [],
         1,
       ),
     );
@@ -1697,6 +1707,7 @@ const CHANNEL_PATCH = {
   "c:cfg:c:novatcat": (v) => ({ novaTicketCategoryId: v[0] || null }),
   "c:cfg:c:welnnova": (v) => ({ welcomeNovaLinkChannelId: v[0] || null }),
   "c:cfg:c:welrp": (v) => ({ welcomeRpLinkChannelId: v[0] || null }),
+  "c:cfg:c:weljoin": (v) => ({ welcomeJoinChannelId: v[0] || null }),
 };
 
 const CFG_LABELS = {
@@ -1737,6 +1748,7 @@ const CFG_LABELS = {
   "c:cfg:c:novatcat": "Категория тикетов Нова",
   "c:cfg:c:welnnova": "Канал заявок Nova RP",
   "c:cfg:c:welrp": "Канал заявок 5 RP",
+  "c:cfg:c:weljoin": "Канал приветствия при входе",
   "c:cfg:r:novastaff": "Роли рекрутера Нова",
   "c:cfg:r:novaping": "Роли тега Нова",
   "c:cfg:r:novaok": "Роль после принятия Нова",
@@ -2574,7 +2586,7 @@ export async function handleAdminInteraction(interaction) {
       `Было: ${fmt(oldVal)}`,
       `Стало: ${fmt(newVal)}`,
     ]).catch(() => null);
-    if (id === "c:cfg:c:welnnova" || id === "c:cfg:c:welrp") {
+    if (id === "c:cfg:c:welnnova" || id === "c:cfg:c:welrp" || id === "c:cfg:c:weljoin") {
       uiSet(interaction, { dept: "nova", tab: "welcome" });
       await refreshTopic(interaction, "welcome");
       refreshWelcomePanels(interaction.client, interaction.guildId).catch(() => null);
