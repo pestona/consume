@@ -126,25 +126,22 @@ function welcomeJoinPayload(member) {
   const cfg = getConfig(guild.id);
   const { nova, rp } = welcomeLinkChannels(cfg);
   const gif = normalizeImageUrl(cfg.welcomeGifUrl);
-  const name = member.user?.username || member.displayName || member.id;
   const embed = new EmbedBuilder()
     .setColor(COLOR_DARK)
-    .setTitle(`Приветствуем тебя, @${name}!`)
-    .setDescription(`Добро пожаловать на сервер **${guild.name}**!`)
+    .setDescription(
+      [
+        `Добро пожаловать на сервер **${guild.name}**!`,
+        "Подать заявку в семью можно тут:",
+        `**Nova RP** — ${mentionOrDash(nova)}`,
+        `**5 RP** — ${mentionOrDash(rp)}`,
+      ].join("\n"),
+    )
     .setFooter({ text: `ID участника: ${member.id} • ${joinStamp()}` });
   if (gif) embed.setImage(gif);
 
-  const lines = [`Приветствую тебя, <@${member.id}>! Подать заявку в семью можно тут:`];
-  if (nova) lines.push(`**Nova RP** — <#${nova}>`);
-  if (rp) lines.push(`**5 RP** — <#${rp}>`);
-  const links = linkButtons(guild.id, nova, rp);
-
   return {
-    embed: { embeds: [embed] },
-    followUp: {
-      content: lines.join("\n"),
-      components: links.length ? [new ActionRowBuilder().addComponents(...links)] : [],
-    },
+    content: `Приветствую тебя, <@${member.id}>!`,
+    embeds: [embed],
   };
 }
 
@@ -158,10 +155,8 @@ export async function onMemberJoinWelcome(member) {
     (await member.guild.channels.fetch(String(channelId)).catch(() => null));
   if (!channel?.isTextBased?.()) return;
 
-  const payload = welcomeJoinPayload(member);
   try {
-    await channel.send(payload.embed);
-    await channel.send(payload.followUp);
+    await channel.send(welcomeJoinPayload(member));
   } catch (err) {
     logJson("WARN", "welcome join не отправлен", {
       guildId: member.guild.id,
